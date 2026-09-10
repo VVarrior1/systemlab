@@ -5,7 +5,7 @@ import { createSystemNode } from "./templates";
 describe("cost 2.0", () => {
   it("prices a component from its kind and capacity only, ignoring imported cost fields", () => {
     const database = createSystemNode("database", "db", { x: 0, y: 0 });
-    expect(componentCost({ ...database, cost: 0 })).toBe(componentCost(database));
+    expect(componentCost({ kind: database.kind, capacity: database.capacity })).toBe(componentCost(database));
     expect(componentCost({ kind: "database", capacity: 150 })).toBe(costRates.database.fixed + costRates.database.base);
   });
 

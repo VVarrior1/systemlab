@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { checkedObjectives, objectivePasses, validateMissionArchitecture } from "./assessment";
+import { assessmentSeeds, checkedObjectives, objectivePasses, validateMissionArchitecture } from "./assessment";
 import { lessons } from "./curriculum";
 import { createSystemNode } from "./templates";
-import type { Architecture, Objective, SimulationResult } from "./types";
+import type { Architecture, Lesson, Objective, SimulationResult } from "./types";
 
 const result: SimulationResult = {
   engineVersion: "1.0.0", seed: 42, duration: 30, requestCount: 3000,
-  completed: 3000, failed: 0, p50: 30, p95: 50, throughput: 99,
-  errorRate: 0, cost: 7, maxQueueDepth: 1,
-  nodes: [], samples: [], traces: [], insights: [], assumptions: [],
+  completed: 3000, failed: 0, rejected: 0, p50: 30, p95: 50, p99: 60, throughput: 99,
+  errorRate: 0, rejectedRate: 0, successRate: 1, staleReads: 0, staleReadRate: 0,
+  retriesIssued: 0, amplification: 1, cost: 7, costBreakdown: [], maxQueueDepth: 1,
+  nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
 };
 const criterion = (metric: Objective["metric"], operator: Objective["operator"], target: number): Objective => ({ id: metric, label: metric, metric, operator, target });
 
@@ -131,6 +132,55 @@ describe("mission architecture constraints", () => {
       { id: "to-cache", source: storageEdge.source, target: "new-cache" },
       { id: "cache-storage", source: "new-cache", target: storageEdge.target },
     );
+    expect(validateMissionArchitecture(lesson, architecture)).toBeNull();
+  });
+});
+
+describe("assessmentSeeds", () => {
+  it("is the lesson's own seed followed by the two fixed assessment seeds", () => {
+    for (const lesson of lessons) {
+      expect(assessmentSeeds(lesson)).toEqual([lesson.workload.seed, 123, 2026]);
+    }
+  });
+});
+
+describe("objectivePasses covers every ObjectiveMetric", () => {
+  it("fails p99 (like p95) when nothing completed", () => {
+    const totalFailure = { ...result, completed: 0, failed: 3000, p99: 0 };
+    expect(objectivePasses(totalFailure, { id: "p99", label: "p99", metric: "p99", operator: "lte", target: 100 })).toBe(false);
+  });
+
+  it("reads rejectedRate, successRate and staleReadRate straight from the result", () => {
+    expect(objectivePasses({ ...result, rejectedRate: 0.02 }, { id: "r", label: "r", metric: "rejectedRate", operator: "lte", target: 0.05 })).toBe(true);
+    expect(objectivePasses({ ...result, rejectedRate: 0.2 }, { id: "r", label: "r", metric: "rejectedRate", operator: "lte", target: 0.05 })).toBe(false);
+    expect(objectivePasses({ ...result, successRate: 0.99 }, { id: "s", label: "s", metric: "successRate", operator: "gte", target: 0.95 })).toBe(true);
+    expect(objectivePasses({ ...result, staleReadRate: 0.4 }, { id: "st", label: "st", metric: "staleReadRate", operator: "lte", target: 0.5 })).toBe(true);
+    expect(objectivePasses({ ...result, staleReadRate: 0.6 }, { id: "st", label: "st", metric: "staleReadRate", operator: "lte", target: 0.5 })).toBe(false);
+  });
+});
+
+describe("validateMissionArchitecture on new lesson kinds", () => {
+  const writtenLesson: Lesson = {
+    ...lessons[0],
+    id: "written-placeholder",
+    kind: "written",
+    objectives: [],
+    architecture: { nodes: [], edges: [] },
+    reference: { nodes: [], edges: [] },
+  };
+
+  it("returns null unconditionally for a written lesson, regardless of the submitted architecture", () => {
+    expect(validateMissionArchitecture(writtenLesson, { nodes: [], edges: [] })).toBeNull();
+    expect(validateMissionArchitecture(writtenLesson, lessons[0].architecture)).toBeNull();
+  });
+
+  it("treats cdn and rate-limiter as valid path components, not bypasses of the database rule", () => {
+    const lesson = lessons.find((item) => item.id === "make-reads-cheaper")!;
+    const architecture: Architecture = structuredClone(lesson.architecture);
+    // Terminate the path at a rate-limiter instead of the database (e.g. a design mid-edit).
+    architecture.nodes.push(createSystemNode("rate-limiter", "trailing-limiter", { x: 900, y: 100 }));
+    const server = architecture.nodes.find((node) => node.kind === "server")!;
+    architecture.edges.push({ id: "server-to-limiter", source: server.id, target: "trailing-limiter" });
     expect(validateMissionArchitecture(lesson, architecture)).toBeNull();
   });
 });

@@ -1,0 +1,81 @@
+import type { Architecture, Lesson, Objective, SimulationResult, Workload } from "./types";
+import { createRandom } from "./simulation/distributions";
+
+export interface RemixedLesson {
+  workload: Workload;
+  factor: number;
+  readShift: number;
+  reference: Architecture;
+}
+
+const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+const roundTo10 = (value: number) => Math.max(10, Math.round(value / 10) * 10);
+
+/**
+ * Seeded remix: scales the lesson's request rate and nudges its read ratio, then scales the
+ * (hidden) reference's server/worker/database capacities to match. Pattern and failures are
+ * left alone; caches, balancers and queues keep their configured sizes (only a rate limiter's
+ * limit/burst scale, since those are throughput knobs like capacity).
+ */
+export function remixLesson(lesson: Lesson, remixSeed: number): RemixedLesson {
+  const random = createRandom(remixSeed);
+  const factor = Math.round((0.7 + random() * 0.9) * 100) / 100; // [0.7, 1.6]
+  const readShift = Math.round((random() * 2 - 1) * 0.15 * 100) / 100; // ±0.15
+  const derivedSeed = Math.floor(random() * 1_000_000) + 1;
+
+  const workload: Workload = {
+    ...lesson.workload,
+    requestRate: Math.max(1, Math.round(lesson.workload.requestRate * factor)),
+    readRatio: clamp01(lesson.workload.readRatio + readShift),
+    seed: derivedSeed,
+  };
+
+  const reference = structuredClone(lesson.reference);
+  for (const node of reference.nodes) {
+    if (node.kind === "server" || node.kind === "database") {
+      node.capacity = roundTo10(node.capacity * factor);
+    } else if (node.kind === "rate-limiter") {
+      if (node.limit !== undefined) node.limit = Math.max(1, Math.round(node.limit * factor));
+      if (node.burst !== undefined) node.burst = Math.max(1, Math.round(node.burst * factor));
+    }
+  }
+
+  return { workload, factor, readShift, reference };
+}
+
+const labelFor = (metric: "maxQueueDepth" | "staleReadRate" | "rejectedRate", target: number): string => {
+  if (metric === "maxQueueDepth") return `Peak queue depth at most ${target}`;
+  if (metric === "staleReadRate") return `Stale read rate at most ${Math.round(target * 1000) / 10}%`;
+  return `Rejected rate at most ${Math.round(target * 1000) / 10}%`;
+};
+
+/**
+ * Derives objectives for a remixed mission from the reference's own measured runs on the three
+ * assessment seeds, per §7's formulas. `workload` is the remixed workload from `remixLesson` --
+ * needed for the requestRate/pattern the throughput target is built from, which the spec's
+ * shorthand signature `(lesson, referenceResults)` omits; see remix.test.ts / final report.
+ */
+export function deriveRemixObjectives(lesson: Lesson, workload: Workload, referenceResults: SimulationResult[]): Objective[] {
+  const maxP95 = Math.max(...referenceResults.map((result) => result.p95));
+  const maxCost = Math.max(...referenceResults.map((result) => result.cost));
+  const p95Target = Math.round(1.2 * maxP95);
+  const costTarget = Math.round(1.1 * maxCost);
+  const throughputFraction = workload.pattern === "steady" ? 0.95 : 0.9;
+  const throughputTarget = throughputFraction * workload.requestRate;
+
+  const objectives: Objective[] = [
+    { id: "p95", label: `P95 latency at most ${p95Target} ms`, metric: "p95", operator: "lte", target: p95Target },
+    { id: "throughput", label: `Throughput at least ${Math.round(throughputTarget)} req/s`, metric: "throughput", operator: "gte", target: throughputTarget },
+    { id: "errorRate", label: "Error rate at most 1%", metric: "errorRate", operator: "lte", target: 0.01 },
+    { id: "cost", label: `Infrastructure cost at most ${costTarget} credits`, metric: "cost", operator: "lte", target: costTarget },
+  ];
+
+  for (const metric of ["maxQueueDepth", "staleReadRate", "rejectedRate"] as const) {
+    if (!lesson.objectives.some((objective) => objective.metric === metric)) continue;
+    const worst = Math.max(...referenceResults.map((result) => result[metric] as number));
+    const target = metric === "maxQueueDepth" ? Math.round(worst * 1.5) : worst * 1.5;
+    objectives.push({ id: metric, label: labelFor(metric, target), metric, operator: "lte", target });
+  }
+
+  return objectives;
+}

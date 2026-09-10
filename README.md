@@ -49,6 +49,15 @@ npm run build
 npm run start
 ```
 
+## Design defense grading
+
+Every lesson ends with a written design defense: the learner justifies their architecture and answers a few adversarial follow-up questions against the lesson's rubric.
+
+- **Self-assessment mode (default).** With no `ANTHROPIC_API_KEY` set, `POST /api/grade` responds `501 { mode: "self" }` and the workspace shows the lesson's model answer and rubric so the learner can grade their own answer.
+- **Graded mode.** With `ANTHROPIC_API_KEY` set, the endpoint sends the learner's answers and the lesson's rubric to Claude (`GRADER_MODEL`, default `claude-opus-5`) and returns a structured grade: a 0-2 score and one-line note per rubric item, a weighted 0-100 total, and a short critique. The model answer used as the grader's reference is never sent to the client.
+
+Set `ANTHROPIC_API_KEY` and, optionally, `GRADER_MODEL` in `.env.local` to turn on graded mode; leave them unset to keep self-assessment.
+
 ## Optional cloud accounts
 
 Without cloud environment variables, the account dialog shows an honest local workspace. Email sign-in and cloud sync become available when a Supabase project is configured.
