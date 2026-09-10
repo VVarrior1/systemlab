@@ -1,4 +1,9 @@
 import type { Architecture, Lesson, NodeKind, Objective, SystemNode, Workload } from "./types";
+
+type LegacyLesson = Omit<Lesson, "kind" | "reference" | "estimation" | "defense" | "readings" | "remixable" | "difficulty"> & { difficulty: "Beginner" | "Intermediate" | "Advanced" };
+function legacy(lesson: LegacyLesson): Lesson {
+  return { ...lesson, kind: "sim", reference: lesson.architecture, estimation: [], defense: { prompt: "", followUps: [], rubric: [], modelAnswer: "" }, readings: [], remixable: false };
+}
 import { createSystemNode, defaultWorkload, nodeDefaults } from "./templates";
 
 export const chapters = ["Foundations", "Performance", "Workloads & queues", "Reliability"];
@@ -59,7 +64,7 @@ const healthy = (throughput: number, latency = 180): Objective[] => [
   objective("errorRate", "lte", 0.01, "Error rate at most 1%"),
 ];
 
-export const lessons: Lesson[] = [
+const legacyLessons: LegacyLesson[] = [
   {
     id: "first-request", number: 1, chapter: chapters[0], title: "Your first request", subtitle: "Follow a request from browser to database.", difficulty: "Beginner", minutes: 8,
     concept: "Latency & throughput",
@@ -184,6 +189,8 @@ export const lessons: Lesson[] = [
     reflection: { question: "Which capacity estimate matters most for this launch?", options: ["Normal traffic divided by the total pre-failure replica count.", "Peak demand compared with the capacity that survives the failure.", "The cache hit rate without considering writes."], answer: 1, explanation: "The most demanding modeled interval combines the traffic spike and the missing application replica. Surviving application and database capacity must support that interval within the budget." },
   },
 ];
+
+export const lessons: Lesson[] = legacyLessons.map(legacy);
 
 export function getLesson(id: string): Lesson | undefined {
   return lessons.find((lesson) => lesson.id === id);
