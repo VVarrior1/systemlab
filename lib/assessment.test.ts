@@ -1,0 +1,136 @@
+import { describe, expect, it } from "vitest";
+import { checkedObjectives, objectivePasses, validateMissionArchitecture } from "./assessment";
+import { lessons } from "./curriculum";
+import { createSystemNode } from "./templates";
+import type { Architecture, Objective, SimulationResult } from "./types";
+
+const result: SimulationResult = {
+  engineVersion: "1.0.0", seed: 42, duration: 30, requestCount: 3000,
+  completed: 3000, failed: 0, p50: 30, p95: 50, throughput: 99,
+  errorRate: 0, cost: 7, maxQueueDepth: 1,
+  nodes: [], samples: [], traces: [], insights: [], assumptions: [],
+};
+const criterion = (metric: Objective["metric"], operator: Objective["operator"], target: number): Objective => ({ id: metric, label: metric, metric, operator, target });
+
+describe("mission objective assessment", () => {
+  it("does not turn exploratory runs or stale checks into green lesson criteria", () => {
+    const lesson = lessons[0];
+    expect(checkedObjectives(lesson, null, 4)).toEqual([false, false, false]);
+    const validation = { revision: 4, passed: true, results: [42, 123, 2026].map((seed) => ({ ...result, seed })) };
+    expect(checkedObjectives(lesson, validation, 4)).toEqual([true, true, true]);
+    expect(checkedObjectives(lesson, validation, 5)).toEqual([false, false, false]);
+    expect(checkedObjectives(lesson, { ...validation, results: [result] }, 4)).toEqual([false, false, false]);
+    expect(checkedObjectives(lesson, { ...validation, results: [result, result, result] }, 4)).toEqual([false, false, false]);
+  });
+
+  it("rejects the removed load balancer before grading even with sufficient provisioned capacity", () => {
+    const lesson = lessons.find((item) => item.id === "share-the-load")!;
+    const architecture = structuredClone(lesson.architecture);
+    architecture.nodes = architecture.nodes.filter((node) => node.kind !== "load-balancer");
+    architecture.nodes.find((node) => node.kind === "server")!.replicas = 2;
+    architecture.edges = [{ id: "direct", source: "traffic", target: "server" }, { id: "storage", source: "server", target: "database" }];
+    expect(validateMissionArchitecture(lesson, architecture)).toMatch(/Required: load balancer/);
+  });
+
+  it("uses inclusive thresholds in both directions", () => {
+    expect(objectivePasses(result, criterion("p95", "lte", 50))).toBe(true);
+    expect(objectivePasses({ ...result, p95: 50.001 }, criterion("p95", "lte", 50))).toBe(false);
+    expect(objectivePasses(result, criterion("throughput", "gte", 99))).toBe(true);
+    expect(objectivePasses({ ...result, throughput: 98.999 }, criterion("throughput", "gte", 99))).toBe(false);
+  });
+
+  it("compares error rates as fractions and rejects non-finite measurements", () => {
+    const errorObjective = criterion("errorRate", "lte", 0.01);
+    expect(objectivePasses({ ...result, errorRate: 0.01 }, errorObjective)).toBe(true);
+    expect(objectivePasses({ ...result, errorRate: 0.010001 }, errorObjective)).toBe(false);
+    for (const invalid of [NaN, Infinity, -Infinity]) {
+      expect(objectivePasses({ ...result, errorRate: invalid }, errorObjective)).toBe(false);
+      expect(objectivePasses({ ...result, throughput: invalid }, criterion("throughput", "gte", 90))).toBe(false);
+    }
+  });
+
+  it("does not award a latency criterion when no requests succeeded", () => {
+    const totalFailure = { ...result, completed: 0, failed: 3000, p50: 0, p95: 0, errorRate: 1, throughput: 0 };
+    expect(objectivePasses(totalFailure, criterion("p95", "lte", 100))).toBe(false);
+  });
+
+  it("requires every seeded run to meet each criterion", () => {
+    const objective = criterion("p95", "lte", 100);
+    const seeded = [{ ...result, seed: 42, p95: 95 }, { ...result, seed: 123, p95: 101 }, { ...result, seed: 2026, p95: 98 }];
+    expect(seeded.every((run) => objectivePasses(run, objective))).toBe(false);
+    expect(seeded.filter((run) => !objectivePasses(run, objective)).map((run) => run.seed)).toEqual([123]);
+  });
+});
+
+describe("mission architecture constraints", () => {
+  it("identifies the routing task in the authored starting graph", () => {
+    for (const lesson of lessons) {
+      if (lesson.requiredBalancedReplicas) expect(validateMissionArchitecture(lesson, lesson.architecture)).toMatch(/at least 2 application replicas/);
+      else expect(validateMissionArchitecture(lesson, lesson.architecture), lesson.id).toBeNull();
+    }
+  });
+
+  it("requires actual replica distribution, not just a decorative balancer", () => {
+    const lesson = lessons.find((item) => item.id === "share-the-load")!;
+    const architecture = structuredClone(lesson.architecture);
+    const server = architecture.nodes.find((node) => node.kind === "server")!;
+    server.capacity = 1000;
+    expect(validateMissionArchitecture(lesson, architecture)).toMatch(/Extra capacity on one replica/);
+    server.replicas = 2;
+    expect(validateMissionArchitecture(lesson, architecture)).toBeNull();
+    server.replicas = 1;
+    architecture.nodes.push({ ...server, id: "second-server" });
+    architecture.edges.push({ id: "second-route", source: "balancer", target: "second-server" }, { id: "second-storage", source: "second-server", target: "database" });
+    expect(validateMissionArchitecture(lesson, architecture)).toBeNull();
+  });
+
+  it("requires the original component types to remain online", () => {
+    const lesson = lessons[0];
+    const removed = structuredClone(lesson.architecture);
+    removed.nodes = removed.nodes.filter((node) => node.kind !== "database");
+    removed.edges = removed.edges.filter((edge) => removed.nodes.some((node) => node.id === edge.target));
+    expect(validateMissionArchitecture(lesson, removed)).toMatch(/component types and roles online/);
+    const disabled = structuredClone(lesson.architecture);
+    disabled.nodes.find((node) => node.kind === "database")!.enabled = false;
+    expect(validateMissionArchitecture(lesson, disabled)).toMatch(/component types and roles online/);
+  });
+
+  it("rejects storage bypasses even when required component counts are preserved", () => {
+    const lesson = lessons[0];
+    const architecture = structuredClone(lesson.architecture);
+    architecture.edges = architecture.edges.filter((edge) => !architecture.nodes.some((node) => node.kind === "database" && node.id === edge.target));
+    expect(validateMissionArchitecture(lesson, architecture)).toMatch(/Every dependency path must end at a database/);
+  });
+
+  it("preserves worker roles and component multiplicity", () => {
+    const lesson = lessons.find((item) => item.id === "jobs-in-the-queue")!;
+    const architecture = structuredClone(lesson.architecture);
+    architecture.nodes.find((node) => node.role === "worker")!.role = "application";
+    expect(validateMissionArchitecture(lesson, architecture)).toMatch(/component types and roles online/);
+    const missingApplication = structuredClone(lesson.architecture);
+    missingApplication.nodes = missingApplication.nodes.filter((node) => !(node.kind === "server" && node.role !== "worker"));
+    expect(validateMissionArchitecture(lesson, missingApplication)).toMatch(/component types and roles online/);
+  });
+
+  it("allows replacement identifiers and added capacity without prescribing one topology", () => {
+    const lesson = lessons[0];
+    const architecture: Architecture = {
+      nodes: lesson.architecture.nodes.map((node) => ({ ...node, id: `replacement-${node.id}`, replicas: node.kind === "server" ? 2 : node.replicas })),
+      edges: lesson.architecture.edges.map((edge) => ({ ...edge, source: `replacement-${edge.source}`, target: `replacement-${edge.target}` })),
+    };
+    expect(validateMissionArchitecture(lesson, architecture)).toBeNull();
+  });
+
+  it("allows cache insertion while retaining a database path for misses and writes", () => {
+    const lesson = lessons.find((item) => item.id === "make-reads-cheaper")!;
+    const architecture = structuredClone(lesson.architecture);
+    const storageEdge = architecture.edges.find((edge) => architecture.nodes.some((node) => node.id === edge.target && node.kind === "database"))!;
+    architecture.nodes.push(createSystemNode("cache", "new-cache", { x: 600, y: 100 }));
+    architecture.edges = architecture.edges.filter((edge) => edge.id !== storageEdge.id);
+    architecture.edges.push(
+      { id: "to-cache", source: storageEdge.source, target: "new-cache" },
+      { id: "cache-storage", source: "new-cache", target: storageEdge.target },
+    );
+    expect(validateMissionArchitecture(lesson, architecture)).toBeNull();
+  });
+});
