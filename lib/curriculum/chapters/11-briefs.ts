@@ -515,7 +515,7 @@ export const chapter: ChapterFile = {
         question: "Why is an unbounded delivery queue a worse failure mode than a bounded one when workers fall behind?",
         options: [
           "The backlog grows until every message in it is already too old to be useful, so the whole batch fails together with no early warning",
-            "Unbounded queues consume more memory per message, so the queue process is killed first",
+          "Unbounded queues consume more memory per message, so the queue process is killed first",
           "Bounded queues deliver messages faster, because a smaller queue has lower per-message overhead",
           "An unbounded queue reorders messages once it exceeds its allocated segment size",
         ],
@@ -574,7 +574,7 @@ export const chapter: ChapterFile = {
       clarifications: [
         clarification(
           "What sample rate should I design for, and how does it vary through the day?",
-          "Around nine hundred writes per second as a daily mean, and it climbs steadily as the fleet scales up through the working day - the late-day peak is well above the mean.",
+          "Around nine hundred requests per second as a daily mean, nine writes for every read, and it climbs steadily as the fleet scales up through the working day - the late-day peak is well above the mean.",
         ),
         clarification(
           "What is the read-to-write ratio?",

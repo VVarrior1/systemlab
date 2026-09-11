@@ -1,0 +1,88 @@
+/* Playground v2: written-lesson layout, the brief's clarify stage, the failure-event editor
+   and the remix badge. Everything else reuses the tokens and classnames already in
+   app/globals.css (workspace-grid, lab-column, workload-settings, field-label, button). */
+
+.written-grid {
+  align-items: stretch;
+}
+.written-column {
+  padding: 4px 22px 26px;
+  overflow-y: auto;
+  background: #fff;
+}
+.written-column .defense-stage {
+  max-width: 760px;
+}
+
+.remix-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border: 1px solid #dde6ef;
+  border-radius: 4px;
+  background: #f2f6fa;
+  color: #6784a0;
+  font-size: 9px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.brief-stage {
+  padding: 19px 20px 4px;
+  border-bottom: 1px solid #e7ebed;
+  background: #fcfdfd;
+}
+
+.failure-editor {
+  grid-column: 1 / -1;
+  border-top: 1px solid #e4ebe5;
+  padding-top: 15px;
+  margin-top: 3px;
+}
+.failure-editor .requirements-heading {
+  margin-bottom: 11px;
+}
+.failure-editor > .button {
+  font-size: 10px;
+  min-height: 30px;
+  padding: 6px 10px;
+}
+.failure-editor .field-note {
+  margin: 0 0 12px;
+  font-size: 10px;
+}
+.failure-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 11px;
+  margin-bottom: 12px;
+}
+.failure-row .field-label {
+  margin: 0;
+  flex: 1 1 130px;
+  min-width: 110px;
+}
+.failure-row .field-label select,
+.failure-row .field-label input {
+  font-size: 10px;
+  height: 31px;
+}
+.failure-row .icon-button {
+  width: 31px;
+  height: 31px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 760px) {
+  .written-column {
+    padding: 0 16px 20px;
+  }
+  .brief-stage {
+    padding: 16px 15px 2px;
+  }
+  .failure-row .field-label {
+    flex-basis: 100%;
+  }
+}

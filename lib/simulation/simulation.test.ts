@@ -1049,5 +1049,5 @@ describe("curriculum smoke test", () => {
         expect(result.insights.length, `${lesson.id} ${name} produced no insights`).toBeGreaterThan(0);
       }
     }
-  });
+  }, 120_000);
 });

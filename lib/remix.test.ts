@@ -109,13 +109,28 @@ describe("deriveRemixObjectives formulas", () => {
     const throughput = objectives.find((o) => o.metric === "throughput")!;
     expect(p95.target).toBe(Math.round(1.2 * 60));
     expect(cost.target).toBe(Math.round(1.1 * 12));
-    expect(throughput.target).toBeCloseTo(0.95 * 100);
+    // min(0.95 x 100 requested, floor(0.9 x 100 measured)) = 90: the cap keeps the target reachable
+    // even when the design sheds traffic on purpose.
+    expect(throughput.target).toBeCloseTo(Math.min(0.95 * 100, Math.floor(0.9 * 100)));
+  });
+
+  it("caps the throughput target at 0.9x the worst measured reference throughput", () => {
+    const results = [140, 120].map((throughput, index) => ({
+      engineVersion: "2.0.0", seed: index + 1, duration: 30, requestCount: 6000, completed: 5000, failed: 1000, rejected: 1000,
+      p50: 20, p95: 40, p99: 70, throughput, errorRate: 0, rejectedRate: 0.16, successRate: 0.84,
+      staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, costBreakdown: [],
+      maxQueueDepth: 1, nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
+    }));
+    // The pattern formula would ask for 0.95 x 200 = 190 req/s, which a shedding design never reaches.
+    const objectives = deriveRemixObjectives(lesson, { ...lesson.workload, requestRate: 200, pattern: "steady" }, results);
+    expect(objectives.find((o) => o.metric === "throughput")!.target).toBe(Math.floor(0.9 * 120));
   });
 
   it("uses the 0.9 throughput fraction for non-steady patterns", () => {
     const results = [{
       engineVersion: "2.0.0", seed: 1, duration: 30, requestCount: 3000, completed: 3000, failed: 0, rejected: 0,
-      p50: 20, p95: 40, p99: 70, throughput: 100, errorRate: 0, rejectedRate: 0, successRate: 1,
+      // Measured well above the requested rate so the reference cap does not bind here.
+      p50: 20, p95: 40, p99: 70, throughput: 400, errorRate: 0, rejectedRate: 0, successRate: 1,
       staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, costBreakdown: [],
       maxQueueDepth: 1, nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
     }];

@@ -7,6 +7,7 @@ import "@/components/architecture-canvas.css";
 import "@/components/results.css";
 import "@/components/library.css";
 import "@/components/mission-panel.css";
+import "@/components/playground.css";
 import "@/components/defense-stage.css";
 import "@/components/gym.css";
 

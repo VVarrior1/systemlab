@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assessmentSeeds, checkedObjectives, objectivePasses, validateMissionArchitecture } from "./assessment";
-import { lessons } from "./curriculum";
+import { getLesson, lessons } from "./curriculum";
 import { createSystemNode } from "./templates";
 import type { Architecture, Lesson, Objective, SimulationResult } from "./types";
 
@@ -15,21 +15,33 @@ const criterion = (metric: Objective["metric"], operator: Objective["operator"],
 
 describe("mission objective assessment", () => {
   it("does not turn exploratory runs or stale checks into green lesson criteria", () => {
-    const lesson = lessons[0];
-    expect(checkedObjectives(lesson, null, 4)).toEqual([false, false, false]);
-    const validation = { revision: 4, passed: true, results: [42, 123, 2026].map((seed) => ({ ...result, seed })) };
-    expect(checkedObjectives(lesson, validation, 4)).toEqual([true, true, true]);
-    expect(checkedObjectives(lesson, validation, 5)).toEqual([false, false, false]);
-    expect(checkedObjectives(lesson, { ...validation, results: [result] }, 4)).toEqual([false, false, false]);
-    expect(checkedObjectives(lesson, { ...validation, results: [result, result, result] }, 4)).toEqual([false, false, false]);
+    const lesson = getLesson("first-request")!;
+    // Fixture comfortably clears first-request's targets (p95 <= 90 ms, throughput >= 57 req/s, errors <= 1%).
+    const all = (value: boolean) => lesson.objectives.map(() => value);
+    expect(lesson.objectives.length).toBeGreaterThan(0);
+    expect(checkedObjectives(lesson, null, 4)).toEqual(all(false));
+    const validation = { revision: 4, passed: true, results: assessmentSeeds(lesson).map((seed) => ({ ...result, seed })) };
+    expect(checkedObjectives(lesson, validation, 4)).toEqual(all(true));
+    expect(checkedObjectives(lesson, validation, 5)).toEqual(all(false));
+    expect(checkedObjectives(lesson, { ...validation, results: [result] }, 4)).toEqual(all(false));
+    // Three runs, but not the three assessment seeds: still not a graded check.
+    expect(checkedObjectives(lesson, { ...validation, results: [result, result, result] }, 4)).toEqual(all(false));
   });
 
   it("rejects the removed load balancer before grading even with sufficient provisioned capacity", () => {
-    const lesson = lessons.find((item) => item.id === "share-the-load")!;
+    // A v2 lesson whose starting graph already contains the balancer the mission depends on.
+    const lesson = getLesson("when-caches-cannot-help")!;
     const architecture = structuredClone(lesson.architecture);
-    architecture.nodes = architecture.nodes.filter((node) => node.kind !== "load-balancer");
-    architecture.nodes.find((node) => node.kind === "server")!.replicas = 2;
-    architecture.edges = [{ id: "direct", source: "traffic", target: "server" }, { id: "storage", source: "server", target: "database" }];
+    const balancers = architecture.nodes.filter((node) => node.kind === "load-balancer").map((node) => node.id);
+    expect(balancers.length).toBeGreaterThan(0);
+    // Wire traffic straight at the servers the balancer used to feed, with capacity to spare.
+    architecture.edges = architecture.edges.flatMap((edge) => {
+      if (balancers.includes(edge.target)) return [];
+      if (!balancers.includes(edge.source)) return [edge];
+      return [{ id: `direct-${edge.target}`, source: "traffic", target: edge.target }];
+    });
+    architecture.nodes = architecture.nodes.filter((node) => !balancers.includes(node.id));
+    for (const node of architecture.nodes) if (node.kind === "server") { node.capacity *= 4; node.replicas = 4; }
     expect(validateMissionArchitecture(lesson, architecture)).toMatch(/Required: load balancer/);
   });
 
@@ -66,22 +78,35 @@ describe("mission objective assessment", () => {
 describe("mission architecture constraints", () => {
   it("identifies the routing task in the authored starting graph", () => {
     for (const lesson of lessons) {
-      if (lesson.requiredBalancedReplicas) expect(validateMissionArchitecture(lesson, lesson.architecture)).toMatch(/at least 2 application replicas/);
+      const required = lesson.requiredBalancedReplicas;
+      if (required) expect(validateMissionArchitecture(lesson, lesson.architecture), lesson.id).toMatch(new RegExp(`at least ${required} application replicas`));
       else expect(validateMissionArchitecture(lesson, lesson.architecture), lesson.id).toBeNull();
     }
   });
 
   it("requires actual replica distribution, not just a decorative balancer", () => {
-    const lesson = lessons.find((item) => item.id === "share-the-load")!;
-    const architecture = structuredClone(lesson.architecture);
-    const server = architecture.nodes.find((node) => node.kind === "server")!;
+    const lesson = getLesson("share-the-load")!;
+    const required = lesson.requiredBalancedReplicas!;
+    expect(required).toBeGreaterThan(1);
+    // The reference is the balanced topology: a balancer in front of the application fleet.
+    const architecture = structuredClone(lesson.reference);
+    const balancerId = architecture.nodes.find((node) => node.kind === "load-balancer")!.id;
+    const databaseId = architecture.nodes.find((node) => node.kind === "database")!.id;
+    const server = architecture.nodes.find((node) => node.kind === "server" && node.role !== "worker")!;
+    server.replicas = 1;
     server.capacity = 1000;
     expect(validateMissionArchitecture(lesson, architecture)).toMatch(/Extra capacity on one replica/);
-    server.replicas = 2;
+    server.replicas = required;
     expect(validateMissionArchitecture(lesson, architecture)).toBeNull();
+    // The same replica count spread over separate balanced servers is equally acceptable.
     server.replicas = 1;
-    architecture.nodes.push({ ...server, id: "second-server" });
-    architecture.edges.push({ id: "second-route", source: "balancer", target: "second-server" }, { id: "second-storage", source: "second-server", target: "database" });
+    for (let index = 1; index < required; index++) {
+      architecture.nodes.push({ ...server, id: `extra-server-${index}` });
+      architecture.edges.push(
+        { id: `extra-route-${index}`, source: balancerId, target: `extra-server-${index}` },
+        { id: `extra-storage-${index}`, source: `extra-server-${index}`, target: databaseId },
+      );
+    }
     expect(validateMissionArchitecture(lesson, architecture)).toBeNull();
   });
 

@@ -61,7 +61,11 @@ export function deriveRemixObjectives(lesson: Lesson, workload: Workload, refere
   const p95Target = Math.round(1.2 * maxP95);
   const costTarget = Math.round(1.1 * maxCost);
   const throughputFraction = workload.pattern === "steady" ? 0.95 : 0.9;
-  const throughputTarget = throughputFraction * workload.requestRate;
+  // The pattern formula assumes every arrival is meant to complete. Lessons that shed on purpose
+  // (rate limiter, bounded queue) never reach it, so the target is also capped just under what the
+  // scaled reference actually measured: the derived objectives stay satisfiable by construction.
+  const minReferenceThroughput = Math.min(...referenceResults.map((result) => result.throughput));
+  const throughputTarget = Math.min(throughputFraction * workload.requestRate, Math.floor(0.9 * minReferenceThroughput));
 
   const objectives: Objective[] = [
     { id: "p95", label: `P95 latency at most ${p95Target} ms`, metric: "p95", operator: "lte", target: p95Target },

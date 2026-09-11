@@ -9,7 +9,7 @@ import { EstimationPanel } from "./estimation-panel";
 
 type Tab = "mission" | "learn" | "deep-dive";
 
-export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummary, hintCount, onRevealHint, estimation, check, remix, attempts, hidden, onOpenReading }: {
+export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummary, hintCount, onRevealHint, estimation, check, remix, attempts, hidden, onOpenReading, defaultTab }: {
   lesson: Lesson;
   objectiveChecks: boolean[];
   status: { text: string; warning: boolean };
@@ -24,13 +24,16 @@ export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummar
     outcomes: EstimationOutcome[] | null;
     required: boolean;
   };
-  check: { label: string; disabled: boolean; passed: boolean; running: boolean; onClick: () => void };
+  /** null on written lessons: there is nothing to simulate, so no assessment line and no Check button. */
+  check: { label: string; disabled: boolean; passed: boolean; running: boolean; onClick: () => void } | null;
   remix: { active: boolean; factor?: number; preparing: boolean; onRemix: () => void; onReset: () => void } | null;
   attempts: number;
   hidden?: boolean;
   onOpenReading?: () => void;
+  /** Written lessons open on Learn, since the mission tab carries no objectives. */
+  defaultTab?: Tab;
 }) {
-  const [tab, setTab] = useState<Tab>("mission");
+  const [tab, setTab] = useState<Tab>(defaultTab ?? "mission");
   const passedCount = objectiveChecks.filter(Boolean).length;
   const estimationBlocked = estimation.required && !estimationComplete(estimation.prompts, estimation.values);
 
@@ -53,15 +56,19 @@ export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummar
             <span>Graded criteria and the traffic workload stay hidden until you clarify the brief. Ask enough questions in the Clarify stage to reveal them.</span>
           </div>
         ) : <>
-          <div className="requirements-heading"><span>GRADED CRITERIA</span><span>{passedCount}/{lesson.objectives.length}</span></div>
-          <ul className="objective-list">
-            {lesson.objectives.map((objective, index) => <li className={objectiveChecks[index] ? "passed" : ""} key={objective.id}>
-              {objectiveChecks[index] ? <span className="objective-check"><Check size={11} /></span> : <Circle size={15} />}
-              <span>{objective.label}</span>
-            </li>)}
-          </ul>
-          <div className="mission-rules"><ShieldCheck size={14} /><span>{assessmentSummary}</span></div>
-          <p className={`assessment-status ${status.warning ? "assessment-warning" : ""}`} role="status">{status.text}</p>
+          {lesson.objectives.length > 0 && <>
+            <div className="requirements-heading"><span>GRADED CRITERIA</span><span>{passedCount}/{lesson.objectives.length}</span></div>
+            <ul className="objective-list">
+              {lesson.objectives.map((objective, index) => <li className={objectiveChecks[index] ? "passed" : ""} key={objective.id}>
+                {objectiveChecks[index] ? <span className="objective-check"><Check size={11} /></span> : <Circle size={15} />}
+                <span>{objective.label}</span>
+              </li>)}
+            </ul>
+          </>}
+          {check && <>
+            <div className="mission-rules"><ShieldCheck size={14} /><span>{assessmentSummary}</span></div>
+            <p className={`assessment-status ${status.warning ? "assessment-warning" : ""}`} role="status">{status.text}</p>
+          </>}
 
           {estimation.prompts.length > 0 && <EstimationPanel prompts={estimation.prompts} values={estimation.values} onChange={estimation.onChange} locked={estimation.locked} outcomes={estimation.outcomes} />}
 
@@ -82,7 +89,7 @@ export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummar
         </>}
       </div>
 
-      {!hidden && <div className="mission-bottom">
+      {!hidden && check && <div className="mission-bottom">
         {remix && <div className="remix-controls">
           <button className="button" onClick={remix.onRemix} disabled={remix.preparing || remix.active}>
             {remix.preparing ? <LoaderCircle className="spin" size={14} /> : <Shuffle size={14} />}

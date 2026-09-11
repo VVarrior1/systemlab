@@ -1,6 +1,6 @@
 # Systemlab
 
-A Next.js system design playground with a guided curriculum, an editable architecture canvas, and a deterministic simulation engine. The first screen opens a working lesson.
+A Next.js system design trainer: a 49-lesson curriculum across 11 chapters, an editable architecture canvas, a deterministic discrete-event simulation engine that models the things that actually break systems, and a learning loop that makes you estimate before you run, defend your design in writing, and replay lessons at new numbers.
 
 ## Run locally
 
@@ -13,22 +13,28 @@ npm run dev
 
 Open [localhost:3000](http://localhost:3000). To select another port, run `npm run dev -- --port 3001`.
 
-No credentials are required for lessons, simulations, saved designs, or browser progress. Optional cloud account settings are listed in `.env.example`.
+No credentials are required for lessons, simulations, saved designs, the estimation gym, or browser progress. Optional settings for design-defense grading and cloud accounts are listed in `.env.example`.
 
 ## Included
 
-- Twelve lessons across foundations, performance, workloads and queues, and reliability, with objectives, graduated hints, and reflection questions.
-- React Flow architecture editing with application servers, load balancers, databases, caches, queues, and a built-in traffic source. Application servers can act as workers.
-- Configurable traffic, seeds, spike and ramp patterns, component capacity, replica counts, and injected failures.
-- Latency, throughput, errors, utilization, queue depth, sampled request traces, run comparisons, and explanations derived from simulation measurements.
-- Sandbox templates, saved designs, JSON import and export, browser autosave, and persistent lesson completion.
+- **49 lessons in 11 chapters**, four tiers from Beginner to Expert: Foundations, Performance, Workloads & queues, Caching deep dive, Reliability, Replication & consistency, Partitioning, Traffic control, Multi-region, an Interview toolkit of written knowledge lessons, and five open-ended Design briefs.
+- **Three lesson kinds.** `sim` lessons are built and measured on the canvas. `brief` lessons start ambiguous: you ask clarifying questions to reveal the workload, then estimate, build and defend. `written` lessons teach a topic through curated readings and a written exercise.
+- **A learning loop that trains interview skills.** Hints name methods, never numbers. You commit numeric estimates (latency, throughput, database load, cost) before Check unlocks and see how calibrated you were. After passing, the app runs alternatives (scale the bottleneck, add a cache, trim replicas, the hidden reference) and shows where your design sits on cost versus latency. Then you write a design defense and answer adversarial follow-ups against a rubric.
+- **Remix.** Every sim lesson can be replayed with a re-rolled workload; targets are derived from a hidden reference solution so the remix is always solvable and never the same numbers twice.
+- **Curated deep-dive readings** for every lesson: verified links to the Google SRE book, PostgreSQL and Redis docs, AWS architecture articles, Jepsen, The Tail at Scale, and engineering blogs, each with a one-line reason to read it.
+- **Estimation gym** at `/gym`: randomized back-of-envelope drills (QPS from DAU, storage growth, bandwidth, server counts, cache sizing, Little's law, retry amplification, availability of serial dependencies, latency numbers) with tolerance grading and streaks.
+- **Engine 2.0.** Heavy-tailed service times; keyed caches with hot keys, TTLs, cold starts and request coalescing; leader-follower databases with replication lag, read-your-writes and failover; sharded databases with hash or range partitioning and hot shards; timeouts, retries with backoff and jitter, circuit breakers; bounded queues and token-bucket rate limiters that shed instead of timing out; load balancers with health-check delay and least-connections; parallel fan-out; regions with cross-region latency and geo routing; failure events that recover (server, database, cache flush, slow database, region outage).
+- **Cost 2.0.** Per-kind nonlinear pricing, so a cache, a read replica, a bigger database and a queue are genuinely different strategies, with a per-component breakdown.
+- Sandbox templates (web app, cached service, background jobs, microservices fan-out, leader and read replicas, sharded writes, rate-limited API, multi-region), saved designs, JSON import and export, browser autosave, and persistent progress that records attempts, hints used, estimation accuracy and defense scores.
 - Optional Supabase email sign-in and explicit synchronization of saved designs and completed lessons.
 
 ## Architecture
 
-`app/` contains Next.js App Router pages. `components/` contains the learning workspace, React Flow canvas, result views, and account controls. `lib/editor-store.ts` owns editing state with Zustand. `lib/curriculum.ts` and `lib/templates.ts` define authored lessons and starting architectures.
+`app/` contains Next.js App Router pages, including `app/gym` and the `app/api/grade` route handler. `components/` contains the learning workspace (`playground.tsx`), the mission panel with estimation and readings, the clarification and defense stages, the React Flow canvas, result views with alternatives, the library, the gym, and account controls. `lib/editor-store.ts` owns editing state with Zustand.
 
-`lib/simulation/` is independent of React and uses SIM.JS for discrete event scheduling. `lib/simulation.worker.ts` runs the engine in a browser worker so simulation does not block the editor. `lib/types.ts` defines the contracts shared by the editor, curriculum, simulator, and persistence.
+`lib/curriculum/` holds the curriculum: one file per chapter under `chapters/`, shared authoring helpers in `shared.ts`, and the index that numbers lessons. `lib/readings/` holds the verified reading lists keyed by lesson id. `lib/templates.ts` defines component defaults, field defaults and sandbox templates. `lib/drills.ts` defines the gym. `lib/estimation.ts`, `lib/alternatives.ts` and `lib/remix.ts` implement the estimation scoring, counterfactual designs and remix derivation. `lib/grading.ts` builds and scores the design-defense grading request.
+
+`lib/simulation/` is independent of React and uses SIM.JS for discrete event scheduling: `index.ts` (engine), `distributions.ts` (seeded RNG, lognormal service times, power-law keys), `cache.ts` (keyed LRU with TTL and coalescing), `insights.ts` (mechanistic explanations), `validate.ts` (topology and limits). `lib/simulation.worker.ts` runs the engine in a browser worker so simulation does not block the editor. `lib/types.ts` defines the contracts shared by the editor, curriculum, simulator, and persistence.
 
 `lib/persistence.ts` validates imported and stored data, versions the storage format, bounds payload sizes, and reports storage failures. Drafts are separate for each lesson and the sandbox. Saved designs are limited to 100 per browser or account. Browser storage is specific to the current browser and deployment origin; clearing it removes local saves. Exported design files provide portable copies.
 
@@ -40,7 +46,7 @@ npm run typecheck
 npm run build
 ```
 
-Vitest covers simulation behavior and reproducibility, curriculum consistency, and persistence failure cases. Every lesson's hinted solution is checked against all objectives across three seeds. A routing regression verifies that the Share the Load workload overloads two application replicas without a load balancer and succeeds with explicit balancing at the same server capacity. Persistence tests exercise corrupt data, unsafe imports, quota failures, deletion markers, draft isolation, and progress merging. Browser interaction and responsive layout checks should run against the built app before each release.
+Vitest covers the engine (determinism, heavy tails, shedding, retries and amplification, breakers, leader failover and stale reads, sharding, keyed caches, health-check delay, regions, fan-out), cost, curriculum rules (every reference solution passes its objectives on three seeds, every starter fails at least one, hints contain no numbers, rubric weights sum to 100, remixed references satisfy their derived targets), estimation scoring, alternatives, remix, drills, grading request validation, and persistence failure cases. Browser interaction and responsive layout checks should run against the built app before each release.
 
 For a production server locally:
 
@@ -56,18 +62,18 @@ Every lesson ends with a written design defense: the learner justifies their arc
 - **Self-assessment mode (default).** With no `ANTHROPIC_API_KEY` set, `POST /api/grade` responds `501 { mode: "self" }` and the workspace shows the lesson's model answer and rubric so the learner can grade their own answer.
 - **Graded mode.** With `ANTHROPIC_API_KEY` set, the endpoint sends the learner's answers and the lesson's rubric to Claude (`GRADER_MODEL`, default `claude-opus-5`) and returns a structured grade: a 0-2 score and one-line note per rubric item, a weighted 0-100 total, and a short critique. The model answer used as the grader's reference is never sent to the client.
 
-Set `ANTHROPIC_API_KEY` and, optionally, `GRADER_MODEL` in `.env.local` to turn on graded mode; leave them unset to keep self-assessment.
+Set `ANTHROPIC_API_KEY` and, optionally, `GRADER_MODEL` in `.env.local` (and in the Vercel environment for deployments) to turn on graded mode; leave them unset to keep self-assessment.
 
 ## Optional cloud accounts
 
 Without cloud environment variables, the account dialog shows an honest local workspace. Email sign-in and cloud sync become available when a Supabase project is configured.
 
-1. Create a Supabase project and apply `supabase/migrations/202609070001_playground.sql` using the SQL editor or your Supabase migration workflow.
+1. Create a Supabase project and apply `supabase/migrations/202609070001_playground.sql` followed by `supabase/migrations/202609100001_v2_progress.sql` using the SQL editor or your Supabase migration workflow.
 2. Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in `.env.local` and in the matching Vercel environment. Use the public anon or publishable key; never use a service-role or secret key in these variables.
 3. Enable email authentication. Configure the Site URL and allowed redirect URLs for the app, including `http://localhost:3000/learn` for local development and the deployed `/learn` URL. Configure an email provider suitable for your production traffic.
 4. Restart or rebuild the app after changing public environment variables. Open Account & storage, request a sign-in link, then use Sync saved work.
 
-The migration enables row-level security on designs and progress. A transactional, authenticated `sync_playground` function merges newer designs, retains deletion markers, and preserves the earliest lesson completion and best latency result with its associated cost. Cloud sync is manual; drafts remain local. Browser saves remain on the device after sign-out, so shared computers require the usual care with browser data.
+The migrations enable row-level security on designs and progress. A transactional, authenticated `sync_playground` function merges newer designs, retains deletion markers, preserves the earliest lesson completion and best latency result with its associated cost, and keeps the highest attempt, estimation and defense scores. Cloud sync is manual; drafts, attempts and gym progress remain local. Browser saves remain on the device after sign-out, so shared computers require the usual care with browser data.
 
 Cloud merging uses saved timestamps, so device clocks should be reasonably synchronized. Progress records are learning aids, not tamper-proof credentials. There is no public sharing service or server-verified certification.
 
@@ -75,22 +81,20 @@ No Supabase project or credentials are included. Live email delivery, deployed d
 
 ## Vercel
 
-Import the repository as a Next.js project. The build command is `npm run build`; Vercel detects the framework output automatically. The guest experience needs no environment variables. Configure the optional Supabase variables for each environment that should offer cloud accounts, and include that deployment's sign-in redirect URL in Supabase.
+Import the repository as a Next.js project. The build command is `npm run build`; Vercel detects the framework output automatically. The guest experience needs no environment variables. Configure `ANTHROPIC_API_KEY` for graded defenses and the optional Supabase variables for each environment that should offer cloud accounts, and include that deployment's sign-in redirect URL in Supabase.
 
 ## Simulation assumptions and scope
 
-The simulator teaches relationships and tradeoffs; it is not a real infrastructure benchmark. Each result includes the assumptions and engine version used for that run.
+The simulator teaches relationships and tradeoffs; it is not a real infrastructure benchmark. Each result includes the full list of assumptions and the engine version used for that run (the Model tab). In short:
 
-- Identical ordered architecture, workload, seed, and engine version reproduce results. Each request is simulated individually.
-- Capacity determines average service time per replica, with seeded variation; configured latency adds transit or dependency delay outside the occupied processing lane. Provisioning capacity and routing requests to it are separate operations.
-- Starting with engine 1.1.0, a direct connection to an application server addresses only its first replica. An explicit load balancer selects healthy application replica endpoints in round-robin order. Requests wait in the selected replica's FIFO queue; extra application replicas are idle without a route to them. Real infrastructure may use proxies, service networking, or client-side balancing, but this model does not assume those mechanisms implicitly.
-- Worker replicas pull work from a shared FIFO queue. The queue provides work distribution, so this modeled worker pool does not require an HTTP load balancer.
-- Database, cache, and load-balancer replicas are idealized managed service pools with implicit dispatch across equivalent healthy service slots. Database slots accept both reads and writes; this is a capacity abstraction, not a claim that real database replicas automatically scale writes or provide immediate failover. Replication lag, read-only replicas, leader election, write coordination, consistency, sharding, and consensus are not modeled.
-- Supported runs use 1-2,000 base requests per second for 1-60 seconds, with up to 48 components. Every request has a five-second completion deadline. Outstanding work is observed for up to five additional seconds.
-- Latency percentiles describe successful requests. Errors are reported separately. Headline throughput counts successful completions during the configured arrival window; charts also show the subsequent drain period.
-- Cache hits apply only to reads. Writes and misses visit the database. Cache warm-up, invalidation, stale data, key skew, and eviction are not simulated.
-- Queued jobs are measured through worker completion, not queue acknowledgment. Durability, retry policies, duplicate delivery, and idempotency are not simulated.
-- A failure removes the first replica from the first matching enabled component halfway through a run. Load balancers immediately avoid that application endpoint for new requests; direct traffic keeps targeting the failed first replica. Application work already processing or waiting at that endpoint can fail rather than migrate. Managed pools can dispatch waiting work to surviving slots. Health-detection delays, retries, recovery, and network partitions are not simulated.
-- Costs are authored scenario credits, not cloud provider prices. Every provisioned replica is billed, including application replicas that receive no traffic.
+- Identical ordered architecture, settings, seed and engine version reproduce results byte for byte. Every request is simulated individually, with a five-second end-to-end deadline; supported runs are 1-60 seconds at 1-3,000 requests per second with up to 48 components.
+- Service time is 1,000 / capacity ms multiplied by a lognormal draw (low, medium or high variance), so tails are heavy and p99 is not p50 plus a constant. Configured latency is added after the processing lane is released. A lane is busy only while processing; dependency waits are asynchronous, and connection pools, thread limits and memory pressure are not modeled.
+- Requests carry a key drawn from a power law over the configured key space and skew, a read/write flag, and an origin region. Hot keys are what make keyed caches, shards and coalescing behave differently from a hit-rate dial.
+- A direct connection to an application server reaches replica 1 only; a load balancer spreads requests over (server, replica) endpoints, round robin or least connections, and refreshes its health view on the configured interval. Workers pull from a shared queue.
+- Keyed caches are an LRU with optional TTL, populated write-through; a read served after a later write to the same key counts as stale. Probabilistic caches only model a hit rate and a warm-up ramp.
+- Leader-follower databases send writes to the leader and reads to followers; reads inside the replication lag are stale unless read-your-writes routes them to the leader; losing the leader fails writes for the failover time, then promotes a follower. Sharded databases are independent pools keyed by hash or range. Consensus, quorum reads, cross-shard transactions, rebalancing and secondary indexes are not modeled.
+- Timeouts abandon a dependency call while the downstream work keeps consuming capacity; retries back off with full jitter; a circuit breaker opens after a second of mostly failing calls and closes on a successful probe. Rate limiters and bounded queues reject on arrival, and rejections are reported separately from errors.
+- Cross-region hops add the configured latency; a CDN is treated as being in the caller's region; a region outage removes every replica in that region until it recovers.
+- Costs are teaching credits from a per-kind nonlinear curve, not provider prices; data size, egress and storage are not priced.
 
-The advanced lessons in this release cover capacity tradeoffs and failure tolerance within this model. Full distributed data semantics, collaboration, AI explanations, and production observability integrations remain future work. The core lessons and result explanations do not call an AI service.
+Network partitions inside a region, consensus protocols, connection pooling, payload size, and real billing remain out of scope. The lessons, simulation and result explanations run entirely in the browser; only the optional design-defense grader calls an AI service.
