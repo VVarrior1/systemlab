@@ -1,0 +1,23 @@
+/* architecture-canvas.tsx: v2 kinds, node card details, grouped inspector. Reuses tokens from app/globals.css. */
+.node-cdn .node-icon{background:#eef6fb;border-color:#dbe9f2;color:#5b93b1}
+.node-rate-limiter .node-icon{background:#fdf1ea;border-color:#f3ddc8;color:#c17d43}
+
+.node-region-tag{position:absolute;top:9px;right:11px;font:7px var(--mono);color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:3px;padding:1px 5px;line-height:1.6}
+
+.node-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:9px}
+.node-badge{display:inline-flex;align-items:center;gap:3px;font:7px var(--mono);color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:3px;padding:2px 5px;line-height:1.5}
+
+.node-shards{display:flex;align-items:flex-end;gap:2px;height:16px;margin-top:9px}
+.node-shards span{flex:1;background:var(--green-soft);border-radius:1px;min-height:3px}
+.node-shards span.hot{background:#d98b5f}
+
+.inspector-section{margin-top:15px;padding-top:14px;border-top:1px solid var(--line)}
+.inspector-section:first-of-type{margin-top:14px}
+.inspector-section-title{font:8px var(--mono);color:var(--muted);letter-spacing:.05em;margin-bottom:11px}
+.setting-note{font-size:9.5px;line-height:1.55;color:var(--muted);margin:4px 0 13px}
+
+.shard-metrics{margin-top:13px}
+.shard-metrics>div{display:flex;justify-content:space-between;gap:6px;font-size:10px;color:var(--muted);padding:3px 0}
+.shard-metrics .field-label{margin-bottom:4px}
+
+.connect-limit-note{font-size:9.5px;color:var(--muted);line-height:1.5;margin-top:4px}

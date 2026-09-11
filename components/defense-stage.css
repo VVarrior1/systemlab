@@ -1,0 +1,60 @@
+.defense-stage{display:flex;flex-direction:column}
+.defense-stage .locked-state{width:100%}
+.defense-stage .panel-empty svg{color:#c5d3c9;margin-bottom:4px}
+
+.reflection-option{display:flex;align-items:center;gap:9px;text-align:left;padding:10px 13px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font-size:12px;line-height:1.5;transition:border-color .15s,background .15s}
+.reflection-option:hover:not(:disabled){border-color:var(--green)}
+.reflection-option svg{flex:none}
+.reflection-option.correct{border-color:var(--green);background:var(--green-soft);color:var(--green-dark)}
+.reflection-option.wrong{border-color:#d99a6c;background:#fbf1e7;color:#a9663a}
+.reflection-nudge{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.reflection-nudge .reflection-feedback{margin:0}
+
+.defense-section{margin:25px 30px 0;padding:25px 0;border-top:1px solid #e7eeea}
+.defense-prompt{font-size:12px;color:var(--ink);line-height:1.7;max-width:820px;margin:0 0 14px}
+.defense-answer{max-width:820px;display:flex;flex-direction:column;gap:8px}
+.defense-answer.submitted{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:12px 14px;gap:6px}
+.defense-answer.submitted p{margin:0;font-size:12px;color:var(--ink);line-height:1.6;white-space:pre-wrap}
+.defense-stage textarea{width:100%;resize:vertical;min-height:100px;border:1px solid var(--line);border-radius:6px;padding:10px 12px;font:inherit;font-size:12px;line-height:1.6;color:var(--ink);background:var(--bg)}
+.defense-stage textarea:focus-visible{outline:2px solid #369b82;outline-offset:1px}
+.defense-word-count{font:10px var(--mono);color:var(--muted);text-align:right}
+.defense-word-count .ok{color:var(--green-dark)}
+
+.defense-followup{max-width:820px;display:flex;flex-direction:column;gap:8px;margin-top:20px;padding-top:18px;border-top:1px solid var(--line)}
+.defense-answer-readonly{margin:0;font-size:12px;color:var(--muted);line-height:1.6;white-space:pre-wrap}
+
+.defense-grade{max-width:820px;margin-top:20px;display:flex;flex-direction:column;gap:12px}
+.defense-grade-header{display:flex;align-items:center;gap:12px}
+.defense-total{font:14px var(--mono);font-weight:600;padding:3px 9px;border-radius:5px}
+.defense-total.pass{background:var(--green-soft);color:var(--green-dark)}
+.defense-total.fail{background:#fbf1e7;color:#a9663a}
+.defense-pass-line{font-size:11px;font-weight:500}
+.defense-pass-line.pass{color:var(--green-dark)}
+.defense-pass-line.fail{color:#a9663a}
+.defense-rubric-results{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.defense-rubric-results li{display:flex;align-items:flex-start;gap:10px;font-size:11px}
+.defense-rubric-score{flex:none;font:11px var(--mono);color:var(--green-dark);background:var(--green-soft);border-radius:4px;padding:2px 6px;min-width:26px;text-align:center}
+.defense-rubric-results li strong{display:block;font-size:12px;color:var(--ink);font-weight:600}
+.defense-rubric-results li p{margin:2px 0 0;color:var(--muted)}
+.defense-critique{font-size:12px;color:var(--ink);line-height:1.7;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:12px 14px;margin:0}
+.defense-grade-error{font-size:11px;color:#a9663a;margin:10px 0 0}
+
+.defense-self-assessment{max-width:820px;margin-top:20px;display:flex;flex-direction:column;gap:12px}
+.defense-self-intro{font-size:12px;color:var(--muted);line-height:1.6;margin:0}
+.defense-model-answer{border:1px solid var(--line);border-radius:6px;padding:10px 12px;background:var(--surface)}
+.defense-model-answer summary{cursor:pointer;font-size:11px;font-weight:500;color:var(--green-dark);list-style:none}
+.defense-model-answer summary::-webkit-details-marker{display:none}
+.defense-model-answer p{margin:10px 0 0;font-size:12px;color:var(--ink);line-height:1.7}
+.defense-rubric-checklist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.defense-rubric-checklist label{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ink)}
+.defense-rubric-checklist input{flex:none}
+.defense-rubric-weight{margin-left:auto;font:10px var(--mono);color:var(--muted)}
+.defense-self-total{font:12px var(--mono);color:var(--ink);font-weight:600}
+
+.completion-section{border-top:0;margin-top:0;padding-top:0}
+.defense-next{margin-top:16px}
+.defense-remix-note{font-size:11px;color:var(--green-dark);margin:8px 0 0}
+
+@media (max-width:720px){
+  .defense-section{margin-left:20px;margin-right:20px;padding:22px 0}
+}

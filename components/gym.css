@@ -1,0 +1,62 @@
+/* Estimation gym (components/gym.tsx). Reuses tokens and shared classes from globals.css
+   (topbar, library-page, eyebrow, segmented, status-chip, button, field-label,
+   estimation-input, estimation-unit, page-loading). */
+
+.gym-heading { max-width: 720px; margin-bottom: 20px; }
+.gym-heading h1 { display: flex; align-items: center; gap: 9px; margin: 6px 0 10px; font-size: 24px; }
+.gym-heading h1 svg { color: var(--green); }
+.gym-heading p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+
+.gym-page .segmented { margin: 18px 0 22px; flex-wrap: wrap; width: fit-content; }
+
+.gym-layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 22px; align-items: start; }
+
+.gym-card { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 22px; }
+.gym-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.gym-card-head h2 { margin: 0; font-size: 15px; }
+.gym-prompt { margin: 0 0 18px; font-size: 14px; line-height: 1.6; color: var(--ink); }
+
+.gym-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-bottom: 4px; }
+.gym-choice { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 12px; font-weight: 500; padding: 11px 12px; text-align: left; transition: border-color .15s, background .15s; }
+.gym-choice:hover:not(:disabled) { border-color: var(--green); }
+.gym-choice.selected { border-color: var(--green); background: var(--green-soft); }
+.gym-choice.correct { border-color: var(--green); background: var(--green-soft); color: var(--green-dark); }
+.gym-choice.wrong { border-color: #e2a4a0; background: #fbeeed; color: #9a352d; }
+.gym-choice:disabled { cursor: default; }
+
+.gym-actions { display: flex; gap: 8px; margin-top: 16px; }
+
+.gym-result { margin-top: 18px; padding: 14px 15px; border-radius: 6px; border: 1px solid var(--line); }
+.gym-result.correct { border-color: var(--green); background: var(--green-soft); }
+.gym-result.wrong { border-color: #e2a4a0; background: #fbeeed; }
+.gym-result-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--ink); }
+.gym-result.correct .gym-result-line svg { color: var(--green-dark); }
+.gym-result.wrong .gym-result-line svg { color: #9a352d; }
+.gym-expected { margin-left: auto; font: 10px var(--mono); font-weight: 500; color: var(--muted); }
+.gym-explanation { margin: 0 0 4px; font-size: 12px; color: var(--ink); line-height: 1.55; }
+.gym-working { margin: 0; font: 11px var(--mono); color: var(--muted); }
+
+.gym-side { display: flex; flex-direction: column; gap: 16px; }
+.gym-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 14px 10px; background: var(--bg); }
+.gym-stat { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; }
+.gym-stat svg { color: var(--green); }
+.gym-stat strong { font-size: 17px; font: 17px/1 var(--mono); color: var(--ink); }
+.gym-stat span { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+
+.gym-topic-counts { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: var(--bg); }
+.gym-topic-counts .field-label { display: block; margin-bottom: 10px; }
+.gym-topic-counts ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.gym-topic-counts li { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--ink); }
+.gym-topic-counts li span:last-child { font: 10px var(--mono); color: var(--muted); }
+
+.gym-numbers { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: var(--surface); }
+.gym-numbers-toggle { display: flex; align-items: center; gap: 7px; width: 100%; border: 0; background: transparent; padding: 0; font-size: 11px; font-weight: 600; color: var(--ink); }
+.gym-numbers-toggle svg { color: var(--muted); }
+.gym-numbers ul { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.gym-numbers li { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; color: var(--muted); }
+.gym-numbers li span:last-child { font: 10px var(--mono); color: var(--ink); font-weight: 500; white-space: nowrap; }
+
+@media (max-width: 860px) {
+  .gym-layout { grid-template-columns: 1fr; }
+  .gym-choices { grid-template-columns: 1fr; }
+}

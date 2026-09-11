@@ -28,7 +28,7 @@ export const readings: Record<string, Reading[]> = {
   "find-the-bottleneck": [
     {
       title: "The Utilization, Saturation, and Errors (USE) Method",
-      url: "http://www.brendangregg.com/usemethod.html",
+      url: "https://www.brendangregg.com/usemethod.html",
       source: "Brendan Gregg",
       why: "Gives the exact checklist (utilization, saturation, errors per resource) for finding which node in your architecture is the actual constraint before you spend money widening it.",
       minutes: 10,

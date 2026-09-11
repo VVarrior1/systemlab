@@ -2,8 +2,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { ArrowUpRight, BookOpen, Check, ChevronRight, FlaskConical, FolderOpen, Layers3, Menu, Network, UserRound, X } from "lucide-react";
-import { lessons, chapters } from "@/lib/curriculum";
+import { ArrowUpRight, BookOpen, Check, ChevronRight, Dumbbell, FlaskConical, FolderOpen, Layers3, Menu, Network, UserRound, X } from "lucide-react";
+import { lessons, chapters, chapterLessons } from "@/lib/curriculum";
 import { readProgress } from "@/lib/persistence";
 import { isCurrentProgress } from "@/lib/assessment-version";
 import { AccountDialog } from "@/components/account-dialog";
@@ -29,10 +29,11 @@ export function Shell({ children, currentLessonId }: { children: ReactNode; curr
       <nav className="main-nav" aria-label="Main navigation">
         <Link className={path.startsWith("/learn") ? "nav-item active" : "nav-item"} href="/learn"><BookOpen size={17} />Learning path<ChevronRight size={14} className="nav-arrow" /></Link>
         <Link className={path === "/sandbox" ? "nav-item active" : "nav-item"} href="/sandbox"><FlaskConical size={17} />Sandbox</Link>
+        <Link className={path === "/gym" ? "nav-item active" : "nav-item"} href="/gym"><Dumbbell size={17} />Estimation gym</Link>
         <Link className={path === "/designs" ? "nav-item active" : "nav-item"} href="/designs"><FolderOpen size={17} />My designs</Link>
       </nav>
       <div className="sidebar-section-label">THE CURRICULUM <span>{lessons.length}</span></div>
-      <div className="chapter-nav">{chapters.map((chapter, index) => <div key={chapter} className="chapter-group"><Link href={`/learn#chapter-${index}`} className={`chapter-title ${current?.chapter === chapter ? "chapter-current" : ""}`}><span className="chapter-number">0{index + 1}</span>{chapter}</Link>{(current?.chapter === chapter || !current && index === 0) && <div className="chapter-lessons">{lessons.filter((l) => l.chapter === chapter).map((lesson) => <Link className={`chapter-lesson ${currentLessonId === lesson.id ? "lesson-current" : ""}`} href={`/learn/${lesson.id}`} key={lesson.id}><span className={`lesson-dot ${completed.includes(lesson.id) ? "done" : ""}`}>{completed.includes(lesson.id) ? <Check size={10} /> : currentLessonId === lesson.id ? <span /> : null}</span>{lesson.title}</Link>)}</div>}</div>)}</div>
+      <div className="chapter-nav">{chapters.map((chapter, index) => { const expanded = current?.chapter === chapter || (!current && index === 0); const items = chapterLessons(chapter); return <div key={chapter} className="chapter-group"><Link href={`/learn#chapter-${index}`} className={`chapter-title ${expanded ? "chapter-current" : ""}`}><span className="chapter-number">0{index + 1}</span>{chapter}{!expanded && <span className="chapter-lesson-count">{items.length}</span>}</Link>{expanded && <div className="chapter-lessons">{items.map((lesson) => <Link className={`chapter-lesson ${currentLessonId === lesson.id ? "lesson-current" : ""}`} href={`/learn/${lesson.id}`} key={lesson.id}><span className={`lesson-dot ${completed.includes(lesson.id) ? "done" : ""}`}>{completed.includes(lesson.id) ? <Check size={10} /> : currentLessonId === lesson.id ? <span /> : null}</span>{lesson.title}</Link>)}</div>}</div>; })}</div>
       <div className="sidebar-bottom"><div className="progress-caption"><span>Your progress</span><span>{completed.length}/{lessons.length}</span></div><div className="progress-track"><div style={{ width: `${completed.length / lessons.length * 100}%` }} /></div><p>One experiment at a time.</p><button className="profile-button" onClick={() => setAccount(true)}><span className="avatar"><UserRound size={17} /></span><span><strong>Your workspace</strong><small>Account & storage</small></span><ArrowUpRight size={14} /></button></div>
       <div className="sidebar-version"><Layers3 size={12} /> SYSTEM DESIGN PLAYGROUND</div>
     </aside>

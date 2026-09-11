@@ -1,0 +1,34 @@
+.metric.dim{opacity:.45}
+.metric.dim:hover{opacity:.7}
+.cost-breakdown{margin-top:8px;font-size:10px}
+.cost-breakdown summary{cursor:pointer;color:var(--muted);list-style:none}
+.cost-breakdown summary::-webkit-details-marker{display:none}
+.cost-breakdown summary::before{content:"+ ";color:var(--green)}
+.cost-breakdown[open] summary::before{content:"- "}
+.cost-breakdown ul{margin:8px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:5px}
+.cost-breakdown li{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--ink);font-size:11px}
+.cost-breakdown li span:first-child{color:var(--muted)}
+
+.events-timeline{margin-bottom:16px}
+.events-list{margin-top:9px;display:flex;flex-direction:column;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.event-row{display:grid;grid-template-columns:14px 34px 1fr;align-items:start;gap:10px;background:var(--bg);padding:9px 12px;font-size:11px}
+.event-row svg{color:var(--green);margin-top:2px}
+.event-time{color:var(--muted);white-space:nowrap}
+.event-row strong{display:block;color:var(--ink);font-size:11px}
+.event-row p{margin:2px 0 0;color:var(--muted)}
+
+.alt-table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:6px}
+.alt-table{width:100%;border-collapse:collapse;font-size:11px;min-width:640px}
+.alt-table th{text-align:left;padding:9px 12px;background:var(--surface);color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.02em;text-transform:uppercase;border-bottom:1px solid var(--line);white-space:nowrap}
+.alt-table td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.alt-table tbody tr:last-child td{border-bottom:0}
+.alt-table td strong{display:block;color:var(--ink);font-size:12px}
+.alt-row-you{background:var(--green-soft)}
+.alt-rationale{display:block;margin-top:2px;color:var(--muted);font-size:10px}
+.alt-comparison{margin:6px 0 0;color:var(--green-dark);font-size:10px;line-height:1.5}
+.alt-error{color:var(--muted);display:flex;align-items:center;gap:6px;font-size:11px}
+.alt-error svg{flex:none}
+
+.alternatives-panel .panel-empty{display:flex;flex-direction:column;align-items:center;gap:10px;max-width:420px;margin:0 auto}
+.spin{animation:results-spin 1s linear infinite}
+@keyframes results-spin{to{transform:rotate(360deg)}}

@@ -1,0 +1,22 @@
+.overview-icon.blue{background:#eef5fa;border-color:#d9e7f0;color:#6f97b5}
+.learning-overview{grid-template-columns:repeat(4,minmax(0,1fr))}
+.learning-overview>.learning-progress{grid-column:1/-1;padding-top:14px;margin-top:5px;border-top:1px solid #e5ebe7}
+
+.library-toolbar-secondary{padding-bottom:14px;margin-bottom:22px;border-bottom:1px solid #edf1ed;gap:16px;flex-wrap:wrap}
+.filter-select{display:flex;align-items:center;gap:7px;font-size:10px;color:#8a9890}
+.filter-select select{border:1px solid #dee5e0;border-radius:4px;background:#fff;color:#526c53;font-size:11px;padding:6px 8px;height:30px}
+.filter-select select:focus-visible{outline:2px solid var(--green);outline-offset:1px}
+
+.kind-badge{display:inline-flex;align-items:center;gap:5px;font-size:9px;font-weight:500;color:#6a8b7e;background:#eef6f1;border:1px solid #dfeae3;border-radius:4px;padding:4px 8px;white-space:nowrap;flex-shrink:0}
+.kind-badge.brief{color:#8a74a4;background:#f4f1f8;border-color:#e7deef}
+.kind-badge.written{color:#a58449;background:#f9f5ed;border-color:#eee4cf}
+
+.lesson-row-readings{display:flex;align-items:center;gap:5px;font-size:10px;color:#91a099;flex-shrink:0}
+
+.chapter-lesson-count{margin-left:auto;font:9px var(--mono);color:#a7b0aa;background:#f1f4f0;border-radius:8px;padding:1px 7px}
+
+@media (max-width:760px){
+  .learning-overview{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .kind-badge{display:none}
+  .lesson-row-readings{display:none}
+}
