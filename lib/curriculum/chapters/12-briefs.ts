@@ -114,11 +114,11 @@ const metricsReference = graph(
 );
 
 export const chapter: ChapterFile = {
-  title: chapterTitles[10],
+  title: chapterTitles[11],
   lessons: [
     brief({
       id: "url-shortener",
-      chapter: chapterTitles[10],
+      chapter: chapterTitles[11],
       title: "Design a URL shortener",
       subtitle: "Extreme read skew, a tiny write path, and a hard cost ceiling.",
       difficulty: "Expert",
@@ -216,7 +216,7 @@ export const chapter: ChapterFile = {
 
     brief({
       id: "news-feed",
-      chapter: chapterTitles[10],
+      chapter: chapterTitles[11],
       title: "Design a news feed",
       subtitle: "Fan-out on write or on read, and a timeline that has to load instantly.",
       difficulty: "Expert",
@@ -314,7 +314,7 @@ export const chapter: ChapterFile = {
 
     brief({
       id: "ticket-sale",
-      chapter: chapterTitles[10],
+      chapter: chapterTitles[11],
       title: "Design a ticket sale",
       subtitle: "A flash crowd, one hot item, and a rule that you must never oversell.",
       difficulty: "Expert",
@@ -417,7 +417,7 @@ export const chapter: ChapterFile = {
 
     brief({
       id: "chat-and-notifications",
-      chapter: chapterTitles[10],
+      chapter: chapterTitles[11],
       title: "Design chat and notifications",
       subtitle: "A write-heavy pipeline, a bounded backlog, and users on two continents.",
       difficulty: "Expert",
@@ -527,7 +527,7 @@ export const chapter: ChapterFile = {
 
     brief({
       id: "metrics-ingestion",
-      chapter: chapterTitles[10],
+      chapter: chapterTitles[11],
       title: "Design metrics ingestion",
       subtitle: "Write-heavy ingest that grows through the day, and a storage tier that browns out.",
       difficulty: "Expert",

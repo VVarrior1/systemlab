@@ -14,6 +14,7 @@ export const chapterTitles = [
   "Partitioning",
   "Traffic control",
   "Multi-region",
+  "Data systems",
   "Interview toolkit",
   "Design briefs",
 ] as const;
@@ -67,6 +68,9 @@ const metricLabels: Record<ObjectiveMetric, (target: number, operator: Objective
   cost: (t) => `Infrastructure cost at most ${t} credits`,
   maxQueueDepth: (t) => `Peak queue depth at most ${t}`,
   staleReadRate: (t) => `Stale reads at most ${Math.round(t * 1000) / 10}%`,
+  duplicateRate: (t) => `Duplicate deliveries at most ${Math.round(t * 1000) / 10}%`,
+  deadLetterRate: (t) => `Dead-lettered jobs at most ${Math.round(t * 1000) / 10}%`,
+  lostWrites: (t) => `Lost writes at most ${t}`,
 };
 
 export function objective(metric: ObjectiveMetric, operator: Objective["operator"], target: number, label?: string): Objective {
@@ -82,6 +86,9 @@ export const queueDepth = (depth: number) => objective("maxQueueDepth", "lte", d
 export const staleReads = (rate: number) => objective("staleReadRate", "lte", rate);
 export const rejected = (rate: number) => objective("rejectedRate", "lte", rate);
 export const p99 = (ms: number) => objective("p99", "lte", ms);
+export const duplicates = (rate: number) => objective("duplicateRate", "lte", rate);
+export const deadLetters = (rate: number) => objective("deadLetterRate", "lte", rate);
+export const lostWrites = (count: number) => objective("lostWrites", "lte", count);
 
 const estimationPresets: Record<EstimationId, Omit<EstimationPrompt, "id">> = {
   p95: { label: "Predicted P95 latency after your change", unit: "ms", tolerance: 0.25 },

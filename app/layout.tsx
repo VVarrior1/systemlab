@@ -9,6 +9,7 @@ import "@/components/library.css";
 import "@/components/mission-panel.css";
 import "@/components/playground.css";
 import "@/components/defense-stage.css";
+import "@/components/clarification-stage.css";
 import "@/components/gym.css";
 
 export const metadata: Metadata = {

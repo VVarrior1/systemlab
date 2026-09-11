@@ -34,7 +34,7 @@ export interface SystemNode {
   /** Dead-endpoint detection interval in ms; 0 = immediate. */
   healthCheckMs?: number;
   // database
-  dbMode?: "single" | "leader-follower" | "sharded";
+  dbMode?: "single" | "leader-follower" | "sharded" | "quorum";
   shards?: number;
   shardStrategy?: "hash" | "range";
   replicationLagMs?: number;
@@ -51,12 +51,30 @@ export interface SystemNode {
   limit?: number;
   /** Token-bucket size. Defaults to `limit`. */
   burst?: number;
+  // v2.1 — queues
+  /** at-most-once (default): a job lost with a dead worker is gone. at-least-once: it is redelivered after the visibility timeout. */
+  ackMode?: "at-most-once" | "at-least-once";
+  visibilityTimeoutMs?: number;
+  /** Redeliveries beyond this count are dead-lettered. Default 3. */
+  maxDeliveries?: number;
+  // v2.1 — workers and servers
+  /** Worker dedups redelivered jobs by key so duplicates do no work. */
+  idempotent?: boolean;
+  /** Max in-flight dependency calls per replica; 0 = unlimited. */
+  poolSize?: number;
+  breakerWindowMs?: number;
+  breakerMinCalls?: number;
+  breakerFailureRatio?: number;
+  breakerOpenMs?: number;
+  // v2.1 — quorum databases
+  quorumWrite?: number;
+  quorumRead?: number;
 }
 export interface SystemEdge { id: string; source: string; target: string }
 export interface Architecture { nodes: SystemNode[]; edges: SystemEdge[] }
 
 export interface FailureEvent {
-  kind: "server" | "database" | "cache-flush" | "slow-database" | "region";
+  kind: "server" | "database" | "cache-flush" | "slow-database" | "slow-server" | "region" | "flapping" | "error-burst";
   /** Fraction of the run, 0..1. */
   at: number;
   /** Seconds until recovery. 0 or undefined: no recovery (server/database), 5 (slow-database), 0 (region). */
@@ -67,6 +85,10 @@ export interface FailureEvent {
   target?: string;
   /** Region outage target. */
   region?: Region;
+  /** flapping: period of the dead/alive cycle in ms. Default 1000. */
+  intervalMs?: number;
+  /** error-burst: share of requests the target fails while looking healthy. Default 0.3. */
+  ratio?: number;
 }
 export interface Workload {
   requestRate: number;
@@ -85,6 +107,8 @@ export interface Workload {
   regions?: { name: Region; share: number }[];
   /** Added to every hop that crosses regions. Default 80. */
   crossRegionLatencyMs?: number;
+  /** End-to-end request deadline. Default 5000. */
+  deadlineMs?: number;
 }
 
 export interface NodeMetric {
@@ -109,7 +133,7 @@ export interface MetricSample {
   queueDepth: number;
   rejected?: number;
 }
-export type TraceStatus = "ok" | "error" | "hit" | "miss" | "bypass" | "rejected" | "timeout" | "retry" | "coalesced" | "stale" | "open-circuit";
+export type TraceStatus = "ok" | "error" | "hit" | "miss" | "bypass" | "rejected" | "timeout" | "retry" | "coalesced" | "stale" | "open-circuit" | "redelivered" | "duplicate" | "dead-letter" | "pool-exhausted" | "lost-write";
 export interface TraceStep { nodeId: string; label: string; startedAt: number; duration: number; status: TraceStatus; replica?: number }
 export interface RequestTrace { id: number; latency: number; success: boolean; steps: TraceStep[] }
 export interface SimulationEvent { time: number; title: string; detail: string; nodeId?: string }
@@ -135,8 +159,18 @@ export interface SimulationResult {
   retriesIssued: number;
   /** Calls received by the most-amplified dependency divided by the requests its callers processed. 1 = no amplification. */
   amplification: number;
+  /** provisionedCost + usageCost. */
   cost: number;
-  costBreakdown: { nodeId: string; label: string; cost: number }[];
+  provisionedCost: number;
+  /** Measured operations extrapolated to an hour at per-kind rates. */
+  usageCost: number;
+  costBreakdown: { nodeId: string; label: string; cost: number; usage?: number }[];
+  duplicates: number;
+  duplicateRate: number;
+  deadLettered: number;
+  deadLetterRate: number;
+  lostWrites: number;
+  poolRejections: number;
   maxQueueDepth: number;
   nodes: NodeMetric[];
   samples: MetricSample[];
@@ -146,7 +180,7 @@ export interface SimulationResult {
   assumptions: string[];
 }
 
-export type ObjectiveMetric = "p95" | "p99" | "throughput" | "errorRate" | "rejectedRate" | "successRate" | "cost" | "maxQueueDepth" | "staleReadRate";
+export type ObjectiveMetric = "p95" | "p99" | "throughput" | "errorRate" | "rejectedRate" | "successRate" | "cost" | "maxQueueDepth" | "staleReadRate" | "duplicateRate" | "deadLetterRate" | "lostWrites";
 export interface Objective {
   id: string;
   label: string;
@@ -195,6 +229,8 @@ export interface Lesson {
   /** Briefs only. The workload stays hidden until at least half of the relevant questions are asked. */
   clarifications?: Clarification[];
   remixable: boolean;
+  /** Briefs: the starter is traffic-only and the reference is never shown; only objectives and runnability are graded. */
+  blankCanvas?: boolean;
 }
 export interface SavedDesign {
   id: string;
@@ -218,4 +254,7 @@ export interface ProgressRecord {
   defenseScore?: number;
   defenseMode?: "graded" | "self";
   remixes?: number;
+  /** Seconds over the interview clocks across the defense. */
+  overtimeSeconds?: number;
+  followUpMode?: "dynamic" | "static";
 }

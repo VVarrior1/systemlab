@@ -6,11 +6,11 @@ import { chapterTitles, defense, rubric, written, type ChapterFile } from "../sh
  * produce on demand, and sets a concrete exercise as its defense prompt.
  */
 export const chapter: ChapterFile = {
-  title: chapterTitles[9],
+  title: chapterTitles[10],
   lessons: [
     written({
       id: "framing-and-requirements",
-      chapter: chapterTitles[9],
+      chapter: chapterTitles[10],
       title: "Frame before you draw",
       subtitle: "Turn a vague prompt into a contract you can design against.",
       difficulty: "Intermediate",
@@ -61,7 +61,7 @@ export const chapter: ChapterFile = {
 
     written({
       id: "numbers-everyone-should-know",
-      chapter: chapterTitles[9],
+      chapter: chapterTitles[10],
       title: "Numbers everyone should know",
       subtitle: "The latency ladder, capacity rules of thumb, and estimates you can do in your head.",
       difficulty: "Intermediate",
@@ -112,7 +112,7 @@ export const chapter: ChapterFile = {
 
     written({
       id: "api-design-and-idempotency",
-      chapter: chapterTitles[9],
+      chapter: chapterTitles[10],
       title: "APIs that survive retries",
       subtitle: "Resources, pagination, versioning, and making a repeated call safe.",
       difficulty: "Intermediate",
@@ -163,7 +163,7 @@ export const chapter: ChapterFile = {
 
     written({
       id: "storage-engines-and-indexing",
-      chapter: chapterTitles[9],
+      chapter: chapterTitles[10],
       title: "Pick the right store",
       subtitle: "B-trees, LSM trees, indexes, and matching an engine to a workload.",
       difficulty: "Intermediate",
@@ -214,7 +214,7 @@ export const chapter: ChapterFile = {
 
     written({
       id: "observability-and-slos",
-      chapter: chapterTitles[9],
+      chapter: chapterTitles[10],
       title: "Know when it is broken",
       subtitle: "Golden signals, SLIs and error budgets, and alerts that page for the right reason.",
       difficulty: "Intermediate",

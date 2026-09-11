@@ -37,12 +37,24 @@ export const nodeFieldDefaults = {
   coalesce: false,
   warmupSeconds: 0,
   limit: 500,
+  ackMode: "at-most-once" as const,
+  visibilityTimeoutMs: 2000,
+  maxDeliveries: 3,
+  idempotent: false,
+  poolSize: 0,
+  breakerWindowMs: 1000,
+  breakerMinCalls: 20,
+  breakerFailureRatio: 0.5,
+  breakerOpenMs: 5000,
+  quorumWrite: 2,
+  quorumRead: 2,
 };
 
 export const workloadFieldDefaults = {
   keySpace: 10000,
   keySkew: 0.6,
   crossRegionLatencyMs: 80,
+  deadlineMs: 5000,
 };
 
 /** Fills every optional field so the engine and the inspector never branch on undefined. */
