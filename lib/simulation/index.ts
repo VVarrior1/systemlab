@@ -12,7 +12,7 @@ import type {
   TraceStep,
   Workload,
 } from "../types";
-import { architectureCost, nodeCost } from "../cost";
+import { architectureCost, nodeCost, usageCost } from "../cost";
 import { normalizeNode, normalizeWorkload } from "../templates";
 import { FetchCoalescer, KeyedCache, probabilisticHitRate } from "./cache";
 import { createRandom, fullJitterBackoff, lognormalMultiplier, powerLawKey, sigmaFor, weightedIndex } from "./distributions";
@@ -21,14 +21,9 @@ import { createScheduler } from "./scheduler";
 import { validateSimulation } from "./validate";
 
 export { validateSimulation } from "./validate";
-export const ENGINE_VERSION = "2.0.0";
+export const ENGINE_VERSION = "2.1.0";
+/** Default end-to-end request deadline. A workload may override it with `deadlineMs`. */
 export const REQUEST_DEADLINE_MS = 5000;
-
-/** Rolling window the circuit breaker judges dependency health over. */
-const BREAKER_WINDOW_MS = 1000;
-const BREAKER_MIN_CALLS = 20;
-const BREAKER_FAILURE_RATIO = 0.5;
-const BREAKER_OPEN_MS = 5000;
 /** No unit of work is instantaneous, however much capacity it has. */
 const MIN_SERVICE_MS = 0.02;
 /** Roughly how many requests carry a full step trace. Sampling keeps big runs cheap. */
@@ -78,7 +73,19 @@ interface Job {
   settled: boolean;
   lane: number;
   stale: boolean;
+  /** One of several lanes a quorum operation occupies. Counted per lane, not per component. */
+  secondary: boolean;
+  /** Set when the job is one delivery of a queued message, so the queue can redeliver it. */
+  delivery: Delivery | undefined;
   done: Done;
+}
+
+/** One message being delivered to a worker, possibly more than once. */
+interface Delivery {
+  deliveries: number;
+  /** True once any delivery of this message reached a worker lane and began processing. */
+  started: boolean;
+  resolved: boolean;
 }
 
 interface DeadInterval {
@@ -126,6 +133,19 @@ interface Runtime {
   cacheCoalesced: number;
   cacheStale: number;
   flushes: number;
+  // gray failures
+  burstUntil: number;
+  burstRatio: number;
+  burstLane: number;
+  burstErrors: number;
+  flapCycles: number;
+  // connection pool
+  poolInFlight: number[];
+  poolWaiters: { job: Job; resume: (release: () => void) => void }[][];
+  poolWaits: number;
+  poolWaitMs: number;
+  poolIdleWaits: number;
+  poolRejections: number;
   // rate limiter
   tokens: number;
   lastRefill: number;
@@ -155,6 +175,19 @@ interface Runtime {
   failoverRejects: number;
   shardOfLane: number[];
   shardCalls: number[];
+  /** Times of writes this leader acknowledged, for the lost-write count on a leader death. */
+  writeAcks: number[];
+  quorumFailures: number;
+  quorumWarned: boolean;
+  // queues
+  deliveries: number;
+  redeliveries: number;
+  duplicates: number;
+  deduped: number;
+  deadLettered: number;
+  // usage metering
+  writeCalls: number;
+  crossRegionIn: number;
 }
 
 interface Bucket {
@@ -182,7 +215,8 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
   const serviceRandom = createRandom(plan.seed ^ 0x85ebca6b);
   const chaosRandom = createRandom(plan.seed ^ 0xc2b2ae35);
   const durationMs = plan.duration * 1000;
-  const horizon = durationMs + REQUEST_DEADLINE_MS;
+  const deadlineMs = plan.deadlineMs;
+  const horizon = durationMs + deadlineMs;
   const crossRegionLatencyMs = plan.crossRegionLatencyMs;
 
   // ---------------------------------------------------------------- runtimes
@@ -197,7 +231,8 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     const poolOfLane: number[] = new Array(lanes).fill(0);
     const shardOfLane: number[] = new Array(lanes).fill(0);
     const newPool = (poolLanes: number[]): Pool => ({ lanes: poolLanes, pending: [], head: 0, waiting: 0, roundRobin: 0 });
-    if (isApplication || (node.kind === "database" && settings.dbMode === "leader-follower")) {
+    const perLanePools = isApplication || (node.kind === "database" && (settings.dbMode === "leader-follower" || settings.dbMode === "quorum"));
+    if (perLanePools) {
       // One lane per pool: application replicas are addressed directly, and a leader or a follower
       // is a distinct endpoint rather than an interchangeable member of a pool.
       for (let lane = 0; lane < lanes; lane++) {
@@ -260,6 +295,17 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       cacheCoalesced: 0,
       cacheStale: 0,
       flushes: 0,
+      burstUntil: 0,
+      burstRatio: 0,
+      burstLane: 0,
+      burstErrors: 0,
+      flapCycles: 0,
+      poolInFlight: new Array(lanes).fill(0),
+      poolWaiters: Array.from({ length: lanes }, () => [] as { job: Job; resume: (release: () => void) => void }[]),
+      poolWaits: 0,
+      poolWaitMs: 0,
+      poolIdleWaits: 0,
+      poolRejections: 0,
       tokens: settings.burst,
       lastRefill: 0,
       endpoints: [],
@@ -270,7 +316,7 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       detectionFailures: 0,
       roundRobin: 0,
       breakerEnabled,
-      simpleCall: !breakerEnabled && settings.retries === 0 && settings.timeoutMs === 0,
+      simpleCall: !breakerEnabled && settings.retries === 0 && settings.timeoutMs === 0 && settings.poolSize <= 0,
       breakerState: "closed",
       breakerOpenUntil: 0,
       breakerProbe: false,
@@ -287,6 +333,16 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       failoverRejects: 0,
       shardOfLane,
       shardCalls: new Array(shards).fill(0),
+      writeAcks: [],
+      quorumFailures: 0,
+      quorumWarned: false,
+      deliveries: 0,
+      redeliveries: 0,
+      duplicates: 0,
+      deduped: 0,
+      deadLettered: 0,
+      writeCalls: 0,
+      crossRegionIn: 0,
     } satisfies Runtime;
   });
 
@@ -334,6 +390,8 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
   let abandonedCalls = 0;
   let zombieReturns = 0;
   let crossRegionRequests = 0;
+  let crossRegionHops = 0;
+  let lostWrites = 0;
 
   const bucketIndex = (time: number) => Math.min(buckets.length - 1, Math.max(0, Math.floor(time / 1000)));
   const emit = (title: string, detail: string, nodeId?: string) => {
@@ -347,6 +405,8 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     atMs: number;
     recoverMs: number;
     factor: number;
+    intervalMs: number;
+    ratio: number;
     target?: Runtime;
     region?: string;
   }
@@ -359,15 +419,22 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
   for (const failure of plan.failures) {
     const at = Math.min(durationMs, Math.max(0, failure.at * durationMs));
     let target: Runtime | undefined;
-    if (failure.kind === "server") target = explicitOfKind(failure.target, "server") ?? firstOfKind("server");
+    if (failure.kind === "server" || failure.kind === "slow-server") target = explicitOfKind(failure.target, "server") ?? firstOfKind("server");
     else if (failure.kind === "database" || failure.kind === "slow-database") target = explicitOfKind(failure.target, "database") ?? firstOfKind("database");
     else if (failure.kind === "cache-flush") target = explicitOfKind(failure.target, "cache") ?? firstOfKind("cache");
-    const defaultDuration = failure.kind === "slow-database" ? 5 : 0;
+    else if (failure.kind === "flapping" || failure.kind === "error-burst") {
+      const explicit = failure.target ? byId.get(failure.target) : undefined;
+      target = explicit && explicit.kind !== "traffic" && explicit.node.enabled ? explicit : firstOfKind("server") ?? firstOfKind("database");
+    }
+    const grayKinds = failure.kind === "slow-database" || failure.kind === "slow-server" || failure.kind === "flapping" || failure.kind === "error-burst";
+    const defaultDuration = grayKinds ? 5 : 0;
     planned.push({
       kind: failure.kind,
       atMs: at,
       recoverMs: Math.max(0, failure.duration ?? defaultDuration) * 1000,
       factor: failure.factor ?? 5,
+      intervalMs: Math.max(1, failure.intervalMs ?? 1000),
+      ratio: Math.min(1, Math.max(0, failure.ratio ?? 0.3)),
       target,
       region: failure.region,
     });
@@ -439,18 +506,20 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     job.settled = true;
     const elapsed = now() - job.enteredAt;
     const runtime = job.runtime;
-    runtime.elapsed += elapsed;
+    // A quorum operation occupies several lanes at once. The lanes each count their own work, but
+    // the component counts one operation, so processed/errors stay comparable with every other kind.
+    if (!job.secondary) runtime.elapsed += elapsed;
     if (job.step) {
       job.step.duration = round(elapsed);
       job.step.status = status;
     }
     if (status === "error" || status === "timeout") {
-      runtime.errors++;
+      if (!job.secondary) runtime.errors++;
       if (job.lane >= 0) runtime.laneErrors[job.lane]++;
-    } else if (status === "rejected" || status === "open-circuit") {
-      runtime.rejected++;
+    } else if (status === "rejected" || status === "open-circuit" || status === "pool-exhausted") {
+      if (!job.secondary) runtime.rejected++;
     } else {
-      runtime.processed++;
+      if (!job.secondary) runtime.processed++;
       if (job.lane >= 0) runtime.laneProcessed[job.lane]++;
     }
     unpend(job);
@@ -543,6 +612,8 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       if (job.step) job.step.replica = lane + 1;
     }
     job.lane = lane;
+    // The message has now been handed to a worker replica: a later redelivery reprocesses it.
+    if (job.delivery) job.delivery.started = true;
     runtime.busy[lane] = true;
     runtime.active[lane] = job;
     const startedAt = now();
@@ -686,8 +757,9 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
   // ---------------------------------------------------------------- breaker
 
   function openBreaker(runtime: Runtime, at: number) {
+    const settings = runtime.settings;
     runtime.breakerState = "open";
-    runtime.breakerOpenUntil = at + BREAKER_OPEN_MS;
+    runtime.breakerOpenUntil = at + settings.breakerOpenMs;
     runtime.breakerOpens++;
     runtime.breakerTimes.length = 0;
     runtime.breakerBad.length = 0;
@@ -695,7 +767,7 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     runtime.breakerBadCount = 0;
     emit(
       `${runtime.node.label} opened its circuit breaker`,
-      `At least ${BREAKER_MIN_CALLS} dependency calls in the last second and at least ${BREAKER_FAILURE_RATIO * 100}% of them failed. Calls fail fast for ${BREAKER_OPEN_MS / 1000}s, then one probe decides whether to close.`,
+      `At least ${settings.breakerMinCalls} dependency calls in the last ${settings.breakerWindowMs.toLocaleString("en-US")} ms and at least ${round(settings.breakerFailureRatio * 100)}% of them failed. Calls fail fast for ${round(settings.breakerOpenMs / 1000)}s, then one probe decides whether to close.`,
       runtime.node.id,
     );
   }
@@ -735,7 +807,7 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     runtime.breakerTimes.push(at);
     runtime.breakerBad.push(ok ? 0 : 1);
     if (!ok) runtime.breakerBadCount++;
-    while (runtime.breakerHead < runtime.breakerTimes.length && runtime.breakerTimes[runtime.breakerHead] <= at - BREAKER_WINDOW_MS) {
+    while (runtime.breakerHead < runtime.breakerTimes.length && runtime.breakerTimes[runtime.breakerHead] <= at - runtime.settings.breakerWindowMs) {
       if (runtime.breakerBad[runtime.breakerHead]) runtime.breakerBadCount--;
       runtime.breakerHead++;
     }
@@ -745,7 +817,7 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       runtime.breakerHead = 0;
     }
     const total = runtime.breakerTimes.length - runtime.breakerHead;
-    if (total >= BREAKER_MIN_CALLS && runtime.breakerBadCount / total >= BREAKER_FAILURE_RATIO) openBreaker(runtime, at);
+    if (total >= runtime.settings.breakerMinCalls && runtime.breakerBadCount / total >= runtime.settings.breakerFailureRatio) openBreaker(runtime, at);
   }
 
   // ---------------------------------------------------------------- hops
@@ -754,19 +826,22 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     return runtime.kind === "traffic" || runtime.kind === "cdn" ? request.region : runtime.region;
   }
 
-  function enter(request: Req, runtime: Runtime, from: Runtime, done: Done, laneHint = -1) {
+  function enter(request: Req, runtime: Runtime, from: Runtime, done: Done, laneHint = -1, delivery?: Delivery) {
     if (request.finished) return;
     runtime.callsReceived++;
+    if (!request.read) runtime.writeCalls++;
     if (runtime.kind === "database") dbCallsPerSecond[bucketIndex(now())]++;
     if (crossRegionLatencyMs > 0 && regionOf(from, request) !== regionOf(runtime, request)) {
       request.crossRegionMs += crossRegionLatencyMs;
-      scheduler.after(crossRegionLatencyMs, () => admit(request, runtime, from, done, laneHint));
+      runtime.crossRegionIn++;
+      crossRegionHops++;
+      scheduler.after(crossRegionLatencyMs, () => admit(request, runtime, from, done, laneHint, delivery));
       return;
     }
-    admit(request, runtime, from, done, laneHint);
+    admit(request, runtime, from, done, laneHint, delivery);
   }
 
-  function admit(request: Req, runtime: Runtime, from: Runtime, done: Done, laneHint: number) {
+  function admit(request: Req, runtime: Runtime, from: Runtime, done: Done, laneHint: number, delivery?: Delivery) {
     if (request.finished) return;
     const settings = runtime.settings;
 
@@ -774,6 +849,11 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       pushStep(request, runtime, "rejected");
       runtime.rejected++;
       rejectRequest(request);
+      return;
+    }
+
+    if (runtime.kind === "database" && settings.dbMode === "quorum") {
+      admitQuorum(request, runtime, done);
       return;
     }
 
@@ -816,6 +896,8 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       settled: false,
       lane: pinned,
       stale,
+      secondary: false,
+      delivery,
       done,
     };
     request.pending.push(job);
@@ -845,14 +927,271 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     }
   }
 
+  /**
+   * Quorum operation: occupy the W (or R) least loaded healthy lanes at once and answer when the
+   * slowest of them replies. Fewer healthy lanes than the quorum needs means the operation fails.
+   */
+  function admitQuorum(request: Req, runtime: Runtime, done: Done) {
+    const settings = runtime.settings;
+    const total = runtime.lanes;
+    const need = Math.min(total, Math.max(1, request.read ? settings.quorumRead : settings.quorumWrite));
+    const healthy: number[] = [];
+    for (let lane = 0; lane < total; lane++) if (runtime.alive[lane]) healthy.push(lane);
+    const startedAt = now();
+    let step: TraceStep | undefined;
+    if (request.traced) {
+      step = { nodeId: runtime.node.id, label: runtime.node.label, startedAt: round(startedAt - request.enteredAt), duration: 0, status: "ok" };
+      request.steps.push(step);
+    }
+    if (healthy.length < need) {
+      runtime.quorumFailures++;
+      runtime.errors++;
+      if (step) step.status = "error";
+      if (!runtime.quorumWarned) {
+        runtime.quorumWarned = true;
+        emit(
+          `${runtime.node.label} lost its ${request.read ? "read" : "write"} quorum`,
+          `${healthy.length} of ${total} replicas are healthy, and a ${request.read ? "read" : "write"} needs ${need}. Operations fail until enough replicas come back.`,
+          runtime.node.id,
+        );
+      }
+      const delay = Math.min(10, runtime.node.latency);
+      const fail = () => {
+        if (step) step.duration = round(now() - startedAt);
+        runtime.elapsed += now() - startedAt;
+        done(false);
+      };
+      if (delay > 0) scheduler.after(delay, fail);
+      else fail();
+      return;
+    }
+    let stale = false;
+    if (request.read && settings.quorumRead + settings.quorumWrite <= total) {
+      const committedAt = runtime.committed!.get(request.key);
+      if (committedAt !== undefined && startedAt - committedAt < settings.replicationLagMs) {
+        stale = true;
+        request.stale = true;
+        runtime.staleServed++;
+        if (step) step.status = "stale";
+      }
+    }
+    const loadOf = (lane: number) => (runtime.busy[lane] ? 1 : 0) + runtime.pools[runtime.poolOfLane[lane]].waiting;
+    healthy.sort((a, b) => loadOf(a) - loadOf(b));
+    const chosen = healthy.slice(0, need);
+    let remaining = chosen.length;
+    let settled = false;
+    const settleOperation = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      runtime.elapsed += now() - startedAt;
+      if (ok) runtime.processed++;
+      else runtime.errors++;
+      if (step) {
+        step.duration = round(now() - startedAt);
+        if (!ok) step.status = "error";
+      }
+      done(ok);
+    };
+    for (const lane of chosen) {
+      const pool = runtime.pools[runtime.poolOfLane[lane]];
+      const job: Job = {
+        request,
+        runtime,
+        pool,
+        enteredAt: now(),
+        step: undefined,
+        queueOwner: runtime,
+        waiting: false,
+        settled: false,
+        lane,
+        stale,
+        secondary: true,
+        delivery: undefined,
+        done: (ok) => {
+          if (!ok) {
+            settleOperation(false);
+            return;
+          }
+          remaining--;
+          if (remaining === 0) settleOperation(true);
+        },
+      };
+      request.pending.push(job);
+      runtime.routed[lane]++;
+      if (!runtime.busy[lane]) startJob(job, lane);
+      else {
+        job.waiting = true;
+        pool.pending.push(job);
+        pool.waiting++;
+        changeQueue(job.queueOwner, 1);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- connection pools
+
+  const RELEASED = () => {};
+
+  /**
+   * A server's connection pool bounds how many dependency calls one replica may have in flight.
+   * Waiting for a connection costs the request latency but occupies no lane, which is exactly how a
+   * slow dependency starves an idle server.
+   */
+  function acquireConnection(job: Job, resume: (release: () => void) => void): void {
+    const runtime = job.runtime;
+    const size = runtime.settings.poolSize;
+    if (size <= 0) {
+      resume(RELEASED);
+      return;
+    }
+    const lane = job.lane >= 0 ? job.lane : 0;
+    const waiters = runtime.poolWaiters[lane];
+    const release = () => {
+      runtime.poolInFlight[lane]--;
+      for (;;) {
+        const next = waiters.shift();
+        if (!next) return;
+        if (next.job.request.finished) continue;
+        runtime.poolInFlight[lane]++;
+        next.resume(release);
+        return;
+      }
+    };
+    if (runtime.poolInFlight[lane] < size) {
+      runtime.poolInFlight[lane]++;
+      resume(release);
+      return;
+    }
+    const bound = runtime.settings.maxQueue;
+    if (bound > 0 && waiters.length >= bound) {
+      runtime.poolRejections++;
+      runtime.rejected++;
+      pushStep(job.request, runtime, "pool-exhausted");
+      rejectRequest(job.request);
+      return;
+    }
+    runtime.poolWaits++;
+    if (!runtime.busy[lane]) runtime.poolIdleWaits++;
+    const queuedAt = now();
+    waiters.push({
+      job,
+      resume: (free) => {
+        runtime.poolWaitMs += now() - queuedAt;
+        resume(free);
+      },
+    });
+  }
+
+  // ---------------------------------------------------------------- queue delivery
+
+  /**
+   * At-most-once hands the message to the worker and forgets it. At-least-once keeps it invisible
+   * rather than deleted: a worker replica that dies mid-job, or one that is still working when the
+   * visibility timeout expires, makes the message visible again and it is delivered afresh.
+   */
+  function deliverFromQueue(request: Req, queue: Runtime, finalDone: Done) {
+    const settings = queue.settings;
+    const worker = queue.next[0];
+    if (!worker) {
+      finalDone(true);
+      return;
+    }
+    if (settings.ackMode !== "at-least-once") {
+      queue.deliveries++;
+      enter(request, worker, queue, finalDone);
+      return;
+    }
+    const idempotent = worker.settings.idempotent;
+    const maxDeliveries = Math.max(1, settings.maxDeliveries);
+    const delivery: Delivery = { deliveries: 0, started: false, resolved: false };
+    const resolve = (ok: boolean) => {
+      if (delivery.resolved) return;
+      delivery.resolved = true;
+      finalDone(ok);
+    };
+    const attempt = () => {
+      if (request.finished || delivery.resolved) return;
+      delivery.deliveries++;
+      queue.deliveries++;
+      if (delivery.deliveries > 1) {
+        queue.redeliveries++;
+        pushStep(request, queue, "redelivered");
+        if (delivery.started) {
+          // The message was already being processed once, so this delivery repeats work that may
+          // have had side effects. An idempotent worker recognises the key and does nothing again.
+          pushStep(request, worker, "duplicate");
+          if (idempotent) {
+            queue.deduped++;
+            resolve(true);
+            return;
+          }
+          queue.duplicates++;
+        }
+      }
+      let closed = false;
+      const giveUp = () => {
+        if (request.finished || delivery.resolved) return;
+        if (delivery.deliveries >= maxDeliveries) {
+          queue.deadLettered++;
+          pushStep(request, queue, "dead-letter");
+          if (queue.deadLettered === 1) {
+            emit(
+              `${queue.node.label} dead-lettered a message`,
+              `It was delivered ${maxDeliveries} time${maxDeliveries === 1 ? "" : "s"} without being acknowledged. Dead-lettered messages are counted as failed requests, not retried again.`,
+              queue.node.id,
+            );
+          }
+          resolve(false);
+          return;
+        }
+        attempt();
+      };
+      if (settings.visibilityTimeoutMs > 0) {
+        scheduler.after(settings.visibilityTimeoutMs, () => {
+          if (closed || request.finished || delivery.resolved) return;
+          closed = true;
+          giveUp();
+        });
+      }
+      enter(
+        request,
+        worker,
+        queue,
+        (ok) => {
+          if (closed) {
+            // A delivery the queue had already given up on finished anyway.
+            if (ok) resolve(true);
+            return;
+          }
+          closed = true;
+          if (ok) resolve(true);
+          else giveUp();
+        },
+        -1,
+        delivery,
+      );
+    };
+    attempt();
+  }
+
   /** The node has finished its own processing. Decide what happens to the request next. */
   function finishService(job: Job) {
     const runtime = job.runtime;
     const request = job.request;
     if (request.finished || job.settled) return;
+    // An error burst fails a share of the replica's requests while health checks still pass.
+    if (now() < runtime.burstUntil && job.lane === runtime.burstLane && chaosRandom() < runtime.burstRatio) {
+      runtime.burstErrors++;
+      settle(job, "error");
+      job.done(false);
+      return;
+    }
     switch (runtime.kind) {
       case "database": {
-        if (!request.read && runtime.committed) runtime.committed.set(request.key, now());
+        if (!request.read) {
+          if (runtime.committed) runtime.committed.set(request.key, now());
+          if (runtime.settings.dbMode === "leader-follower") noteWriteAck(runtime);
+        }
         settle(job, job.stale ? "stale" : "ok");
         job.done(true);
         return;
@@ -882,7 +1221,7 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       }
       case "queue": {
         settle(job, "ok");
-        enter(request, runtime.next[0], runtime, job.done);
+        deliverFromQueue(request, runtime, job.done);
         return;
       }
       case "cache": {
@@ -893,6 +1232,16 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
         settle(job, "ok");
         callDependencies(job);
       }
+    }
+  }
+
+  /** Remembers when the leader acknowledged a write, so a leader death can count what was lost. */
+  function noteWriteAck(runtime: Runtime) {
+    const at = now();
+    runtime.writeAcks.push(at);
+    if (runtime.writeAcks.length > 4096) {
+      const cutoff = at - runtime.settings.replicationLagMs;
+      runtime.writeAcks = runtime.writeAcks.filter((time) => time >= cutoff);
     }
   }
 
@@ -1017,43 +1366,58 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     let attempt = 0;
     const attemptCall = () => {
       if (request.finished) return;
-      let resolved = false;
-      const complete = (ok: boolean) => {
-        if (resolved) return;
-        resolved = true;
-        if (runtime.breakerEnabled) recordBreaker(runtime, ok);
-        if (ok) {
-          onResult(true);
+      // A connection is held for one attempt: taken before the call leaves, returned when the
+      // caller learns the outcome, including at a timeout.
+      acquireConnection(job, (release) => {
+        if (request.finished) {
+          release();
           return;
         }
-        if (attempt < settings.retries && !request.finished) {
-          attempt++;
-          scheduler.after(fullJitterBackoff(chaosRandom, settings.retryBackoffMs, attempt - 1), () => {
-            // A retry that never leaves because the request already gave up is not a retry.
-            if (request.finished) return;
-            retriesIssued++;
-            pushStep(request, runtime, "retry");
-            attemptCall();
+        let resolved = false;
+        let released = false;
+        const free = () => {
+          if (released) return;
+          released = true;
+          release();
+        };
+        const complete = (ok: boolean) => {
+          if (resolved) return;
+          resolved = true;
+          free();
+          if (runtime.breakerEnabled) recordBreaker(runtime, ok);
+          if (ok) {
+            onResult(true);
+            return;
+          }
+          if (attempt < settings.retries && !request.finished) {
+            attempt++;
+            scheduler.after(fullJitterBackoff(chaosRandom, settings.retryBackoffMs, attempt - 1), () => {
+              // A retry that never leaves because the request already gave up is not a retry.
+              if (request.finished) return;
+              retriesIssued++;
+              pushStep(request, runtime, "retry");
+              attemptCall();
+            });
+            return;
+          }
+          onResult(false);
+        };
+        if (settings.timeoutMs > 0) {
+          scheduler.after(settings.timeoutMs, () => {
+            if (resolved || request.finished) return;
+            abandonedCalls++;
+            pushStep(request, runtime, "timeout");
+            complete(false);
           });
-          return;
         }
-        onResult(false);
-      };
-      if (settings.timeoutMs > 0) {
-        scheduler.after(settings.timeoutMs, () => {
-          if (resolved || request.finished) return;
-          abandonedCalls++;
-          pushStep(request, runtime, "timeout");
-          complete(false);
+        enter(request, dep, runtime, (ok) => {
+          if (resolved) {
+            // The caller gave up on this call; the work still ran and consumed capacity.
+            zombieReturns++;
+            return;
+          }
+          complete(ok);
         });
-      }
-      enter(request, dep, runtime, (ok) => {
-        if (resolved) {
-          // The caller gave up on this call; the work still ran and consumed capacity.
-          zombieReturns++;
-          return;
-        }
-        complete(ok);
       });
     };
     attemptCall();
@@ -1081,6 +1445,21 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       pool.head = 0;
     }
     if (runtime.kind === "database" && runtime.settings.dbMode === "leader-follower" && lane === runtime.leaderLane) {
+      // Writes the leader acknowledged inside the last replication lag never reached a follower.
+      const cutoff = now() - runtime.settings.replicationLagMs;
+      let lost = 0;
+      for (let index = runtime.writeAcks.length - 1; index >= 0; index--) {
+        if (runtime.writeAcks[index] < cutoff) break;
+        lost++;
+      }
+      if (lost > 0) {
+        lostWrites += lost;
+        emit(
+          `${runtime.node.label} lost ${lost.toLocaleString("en-US")} acknowledged write${lost === 1 ? "" : "s"}`,
+          `They were acknowledged by the leader inside the ${runtime.settings.replicationLagMs.toLocaleString("en-US")} ms replication lag, so no follower had them when the leader died. Those clients were told the write succeeded.`,
+          runtime.node.id,
+        );
+      }
       const failoverMs = runtime.settings.failoverMs;
       runtime.failoverUntil = now() + failoverMs;
       emit(
@@ -1129,7 +1508,63 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       });
       continue;
     }
-    if (item.kind === "slow-database") {
+    if (item.kind === "flapping") {
+      const target = item.target;
+      if (!target) continue;
+      const interval = Math.max(1, item.intervalMs);
+      const until = atMs + (item.recoverMs || 5000);
+      let toggleAt = atMs;
+      let killing = true;
+      let announced = false;
+      while (toggleAt < until) {
+        const at = toggleAt;
+        const kill = killing;
+        if (kill) target.deadIntervals[0].push({ from: at, to: Math.min(until, at + interval) });
+        scheduler.after(at, () => {
+          if (kill) {
+            target.flapCycles++;
+            killLane(target, 0);
+            if (!announced) {
+              announced = true;
+              emit(
+                `${target.node.label} replica 1 started flapping`,
+                `It dies and recovers every ${interval.toLocaleString("en-US")} ms for ${round((until - atMs) / 1000)}s. A health check only sees whichever state it happens to land on.`,
+                target.node.id,
+              );
+            }
+          } else reviveLane(target, 0);
+        });
+        killing = !killing;
+        toggleAt += interval;
+      }
+      scheduler.after(until, () => {
+        reviveLane(target, 0);
+        emit(`${target.node.label} replica 1 stopped flapping`, "It stays healthy from here. Anything routed to it while it was dead already failed.", target.node.id);
+      });
+      continue;
+    }
+    if (item.kind === "error-burst") {
+      const target = item.target;
+      if (!target) continue;
+      const until = atMs + (item.recoverMs || 5000);
+      scheduler.after(atMs, () => {
+        target.burstUntil = until;
+        target.burstRatio = item.ratio;
+        target.burstLane = 0;
+        emit(
+          `${target.node.label} replica 1 started failing ${round(item.ratio * 100)}% of its requests`,
+          `The replica answers health checks normally for ${round((until - atMs) / 1000)}s, so nothing takes it out of rotation. This is a gray failure: partial, and invisible to liveness checks.`,
+          target.node.id,
+        );
+      });
+      scheduler.after(until, () => {
+        target.burstUntil = 0;
+        target.burstRatio = 0;
+        emit(`${target.node.label} replica 1 stopped returning errors`, "Its error rate is back to zero. Nothing about its health status ever changed.", target.node.id);
+      });
+      continue;
+    }
+    if (item.kind === "slow-database" || item.kind === "slow-server") {
       const target = item.target;
       if (!target) continue;
       const until = atMs + (item.recoverMs || 5000);
@@ -1233,7 +1668,7 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
         source.processed++;
         if (read) readRequests++;
         liveRequests.add(request);
-        scheduler.after(REQUEST_DEADLINE_MS, () => finish(request, false, FINISH_DEADLINE));
+        scheduler.after(deadlineMs, () => finish(request, false, FINISH_DEADLINE));
         enter(request, pickTrafficTarget(request), source, (ok) => finish(request, ok));
       });
     }
@@ -1329,6 +1764,39 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
   const cacheReads = caches.reduce((sum, runtime) => sum + runtime.cacheReads, 0) + runtimes.filter((runtime) => runtime.kind === "cdn").reduce((sum, runtime) => sum + runtime.cacheReads, 0);
   const cacheHits = caches.reduce((sum, runtime) => sum + runtime.cacheHits, 0) + runtimes.filter((runtime) => runtime.kind === "cdn").reduce((sum, runtime) => sum + runtime.cacheHits, 0);
 
+  // ---------------------------------------------------------------- usage cost
+
+  /** Measured operations extrapolated to one hour, which is what the usage rates are quoted in. */
+  const hourly = (value: number) => (value / (plan.duration || 1)) * 3600;
+  function usageOf(runtime: Runtime): number {
+    const crossRegion = hourly(runtime.crossRegionIn);
+    switch (runtime.kind) {
+      case "server":
+        return usageCost({ server: hourly(runtime.callsReceived), crossRegion });
+      case "database":
+        return usageCost({ database: hourly(runtime.callsReceived), databaseWrites: hourly(runtime.writeCalls), crossRegion });
+      case "cache":
+        return usageCost({ cache: hourly(runtime.callsReceived), crossRegion });
+      case "cdn":
+        return usageCost({ cdn: hourly(runtime.cacheHits), crossRegion });
+      case "queue":
+        return usageCost({ queue: hourly(runtime.deliveries), crossRegion });
+      case "rate-limiter":
+        return usageCost({ "rate-limiter": hourly(runtime.callsReceived), crossRegion });
+      default:
+        return usageCost({ crossRegion });
+    }
+  }
+  const provisionedCost = architectureCost(architecture.nodes);
+  // Rounded before the total so the two halves the learner is shown add up to the bill exactly.
+  const usageTotal = round(runtimes.reduce((sum, runtime) => sum + (runtime.node.enabled ? usageOf(runtime) : 0), 0));
+  const totalCost = round(provisionedCost + usageTotal);
+  const duplicates = runtimes.reduce((sum, runtime) => sum + runtime.duplicates, 0);
+  const dedupedDuplicates = runtimes.reduce((sum, runtime) => sum + runtime.deduped, 0);
+  const redeliveries = runtimes.reduce((sum, runtime) => sum + runtime.redeliveries, 0);
+  const deadLettered = runtimes.reduce((sum, runtime) => sum + runtime.deadLettered, 0);
+  const poolRejections = runtimes.reduce((sum, runtime) => sum + runtime.poolRejections, 0);
+
   const nodeTelemetry: NodeTelemetry[] = runtimes.map((runtime, index) => ({
     id: runtime.node.id,
     label: runtime.node.label,
@@ -1354,6 +1822,24 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     timeoutMs: runtime.settings.timeoutMs,
     maxQueue: runtime.settings.maxQueue,
     shardUtilization: nodes[index].shards,
+    poolSize: runtime.settings.poolSize,
+    poolWaits: runtime.poolWaits,
+    poolWaitMs: round(runtime.poolWaitMs),
+    poolIdleWaits: runtime.poolIdleWaits,
+    poolRejections: runtime.poolRejections,
+    quorumFailures: runtime.quorumFailures,
+    quorumWrite: runtime.settings.quorumWrite,
+    quorumRead: runtime.settings.quorumRead,
+    ackMode: runtime.settings.ackMode,
+    idempotent: runtime.settings.idempotent,
+    deliveries: runtime.deliveries,
+    redeliveries: runtime.redeliveries,
+    duplicates: runtime.duplicates,
+    deduped: runtime.deduped,
+    deadLettered: runtime.deadLettered,
+    burstErrors: runtime.burstErrors,
+    flapCycles: runtime.flapCycles,
+    usageCost: usageOf(runtime),
   }));
 
   const flushSeconds = planned.filter((item) => item.kind === "cache-flush").map((item) => item.atMs / 1000);
@@ -1408,6 +1894,18 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     steadyDbRate: steadySeconds ? round(steadyDbCalls / steadySeconds) : 0,
     hasCacheFlush: flushSeconds.length > 0,
     hasQueue: runtimes.some((runtime) => runtime.kind === "queue"),
+    duplicates,
+    duplicateRate: ratio(duplicates / (requestCount || 1)),
+    dedupedDuplicates,
+    redeliveries,
+    deadLettered,
+    deadLetterRate: ratio(deadLettered / (requestCount || 1)),
+    lostWrites,
+    poolRejections,
+    provisionedCost,
+    usageCost: usageTotal,
+    cost: totalCost,
+    deadlineMs,
     events,
     nodes: nodeTelemetry,
     failures: plan.failures,
@@ -1434,10 +1932,18 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     staleReadRate: telemetry.staleReadRate,
     retriesIssued,
     amplification: telemetry.amplification,
-    cost: architectureCost(architecture.nodes),
+    cost: totalCost,
+    provisionedCost,
+    usageCost: usageTotal,
     costBreakdown: architecture.nodes
       .filter((node) => node.kind !== "traffic" && node.enabled)
-      .map((node) => ({ nodeId: node.id, label: node.label, cost: nodeCost(node) })),
+      .map((node) => ({ nodeId: node.id, label: node.label, cost: nodeCost(node), usage: usageOf(byId.get(node.id)!) })),
+    duplicates,
+    duplicateRate: telemetry.duplicateRate,
+    deadLettered,
+    deadLetterRate: telemetry.deadLetterRate,
+    lostWrites,
+    poolRejections,
     maxQueueDepth: peakGlobalQueue,
     nodes,
     samples,
@@ -1456,13 +1962,17 @@ function assumptionsFor(plan: Required<Workload>): string[] {
     "Application replicas keep separate FIFO queues and requests stay pinned to the replica they were routed to. Workers, single-mode databases, caches, CDNs, queues, rate limiters and load balancers share one FIFO queue per pool. A direct connection to an application server reaches replica 1 only; a load balancer spreads work over (server, replica) endpoints.",
     `Requests carry a key drawn from a power law over ${plan.keySpace.toLocaleString("en-US")} keys at skew ${plan.keySkew}, a read/write flag, and an origin region. Hot keys are what make caches, shards and coalescing behave differently from a hit-rate dial.`,
     "Keyed caches are an LRU over a fixed number of keys with an optional TTL, populated write-through when the database returns. A read served after a later write to the same key is counted stale. Probabilistic caches roll a hit per read and only model a warm-up ramp, not eviction or invalidation.",
-    "Leader-follower databases send writes to the leader and reads round robin over healthy followers. A follower read of a key written inside the replication lag is stale unless read-your-writes routes it to the leader. Losing the leader fails writes for the configured failover time, then promotes the first healthy follower. Consensus, quorum reads, write-ahead logs and lost unreplicated writes are not modelled.",
+    "Leader-follower databases send writes to the leader and reads round robin over healthy followers. A follower read of a key written inside the replication lag is stale unless read-your-writes routes it to the leader. Losing the leader fails writes for the configured failover time, then promotes the first healthy follower. Writes the leader acknowledged inside the replication lag before it died are counted as lostWrites: those clients were told the write succeeded, and the requests stay successful.",
+    "Quorum databases treat every replica as a peer. A write occupies the W least loaded healthy replicas and answers when the slowest of them answers; a read occupies R. Fewer healthy replicas than the quorum needs fails the operation. R + W > N never reads stale data; otherwise a read of a key written inside the replication lag is stale, as with a follower. Leader election, hinted handoff, read repair and anti-entropy are not modelled.",
+    "At-most-once queues hand a job to a worker once: if the worker replica dies mid-job the job is gone. At-least-once queues keep the message invisible instead of deleting it, so a worker death or a delivery that outlives visibilityTimeoutMs makes it visible again and it is redelivered. A redelivery of a message a worker had already started counts as a duplicate unless the worker is idempotent, in which case it is deduplicated and does no downstream work. A message delivered maxDeliveries times without an acknowledgement is dead-lettered and counts as a failed request.",
     "Sharded databases are independent pools keyed by hash or range. Rebalancing, cross-shard transactions and secondary indexes are not modelled.",
-    "Timeouts abandon a dependency call; the downstream work keeps running and keeps consuming capacity. Retries use exponential backoff with full jitter. A circuit breaker judges the last second of dependency calls and opens for five seconds after at least 20 calls with at least 50% failures, then closes on one successful probe.",
+    "Timeouts abandon a dependency call; the downstream work keeps running and keeps consuming capacity. Retries use exponential backoff with full jitter. A circuit breaker judges its own rolling window of dependency calls (breakerWindowMs) and opens for breakerOpenMs once breakerMinCalls have been seen and the failure ratio reaches breakerFailureRatio, then closes on one successful probe.",
+    "A server with a connection pool may have at most poolSize dependency calls in flight per replica. Calls beyond that wait for a connection, which adds to request latency but occupies no lane, and are rejected as pool-exhausted once the wait list reaches maxQueue. That is how a slow dependency starves a server whose own utilization looks low.",
     "Rate limiters are token buckets, and bounded queues reject on arrival. Both count as rejected rather than as errors: shedding is a deliberate choice, not a fault.",
     `Load balancers refresh their view of endpoint health every healthCheckMs; a request sent to an endpoint that died since the last check fails after min(10, latency) ms. ${plan.crossRegionLatencyMs} ms is added to every hop that crosses a region, and a CDN is treated as being in the caller's own region.`,
-    "All generated requests are simulated individually, with a 5,000 ms end-to-end deadline. Arrivals stop at the configured duration; outstanding work is watched for five more seconds. Supported runs are 1-60 seconds at 1-3,000 requests/s over at most 48 components.",
+    `All generated requests are simulated individually, with a ${plan.deadlineMs.toLocaleString("en-US")} ms end-to-end deadline. Arrivals stop at the configured duration; outstanding work is watched until the deadline passes. Supported runs are 1-60 seconds at 1-3,000 requests/s over at most 48 components.`,
+    "Gray failures are partial, not binary. A slow server or slow database multiplies service time; a flapping replica dies and recovers on its own interval, so a health check sees whichever state it lands on; an error burst fails a share of one replica's requests while that replica keeps answering health checks normally.",
     "Throughput counts successful completions inside the traffic window. Latency percentiles cover successful requests only, including the drain period. errorRate excludes deliberate rejections; rejectedRate reports them separately. Utilization measures occupied lane time against the time a lane was both inside the window and alive.",
-    "Costs are teaching credits from a per-kind nonlinear curve (fixed + base x (capacity / reference) ^ exponent per replica, times replicas, shards, and a premium for followers). Imported cost fields are ignored. This is not provider pricing, and it ignores data size, egress and storage.",
+    "Costs are teaching credits and have two halves. Provisioned cost is the per-kind nonlinear curve (fixed + base x (capacity / reference) ^ exponent per replica, times replicas, shards, and a premium for followers). Usage cost prices the operations actually measured, extrapolated to an hour, per 1,000 operations: database 0.004 with writes billed twice, cache 0.0005, CDN 0.001 per edge hit, queue 0.0005 per delivered message (a redelivery is another delivery), server 0.0005, rate limiter 0.0002, and 0.002 per cross-region hop. cost = provisionedCost + usageCost. Imported cost fields are ignored. This is not provider pricing, and it ignores data size, egress and storage.",
   ];
 }

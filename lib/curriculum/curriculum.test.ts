@@ -75,10 +75,16 @@ describe.skipIf(graded.length === 0)("references and starters", () => {
     }
   });
 
-  it.each(graded.filter((item) => item.number !== 1).map((item) => [item.id, item] as const))("%s: the starter fails at least one objective, so there is something to fix", (_, item) => {
+  it.each(graded.filter((item) => item.number !== 1 && !item.blankCanvas).map((item) => [item.id, item] as const))("%s: the starter fails at least one objective, so there is something to fix", (_, item) => {
     validateSimulation(item.architecture, item.workload);
     const result = runSimulation(item.architecture, item.workload);
     expect(item.objectives.some((objective) => !objectivePasses(result, objective))).toBe(true);
+  });
+
+  const blankCanvasLessons = graded.filter((item) => item.blankCanvas);
+  it.skipIf(blankCanvasLessons.length === 0).each(blankCanvasLessons.map((item) => [item.id, item] as const))("%s: a blank-canvas starter is traffic-only (not runnable), so grading skips the starter run", (_, item) => {
+    expect(item.architecture.nodes).toHaveLength(1);
+    expect(item.architecture.nodes[0].kind).toBe("traffic");
   });
 });
 

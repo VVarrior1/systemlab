@@ -9,8 +9,10 @@ const criterion = (metric: Objective["metric"], operator: Objective["operator"],
 describe("generateAlternatives", () => {
   it("produces only valid, runnable architectures for every current lesson", () => {
     for (const lesson of lessons) {
-      const alternatives = generateAlternatives(lesson.architecture, lesson);
-      expect(alternatives.length).toBeGreaterThan(0);
+      // Blank-canvas briefs start from a traffic source alone, so alternatives are generated from a real design instead.
+      const base = lesson.blankCanvas ? lesson.reference : lesson.architecture;
+      const alternatives = generateAlternatives(base, lesson);
+      expect(alternatives.length, `${lesson.id} produced no alternatives`).toBeGreaterThan(0);
       for (const alternative of alternatives) {
         expect(() => validateSimulation(alternative.architecture, lesson.workload), `${lesson.id}/${alternative.id}`).not.toThrow();
       }
@@ -75,6 +77,14 @@ describe("generateAlternatives", () => {
     expect(generateAlternatives(lesson.architecture).find((alt) => alt.id === "reference")).toBeUndefined();
   });
 
+  it("never offers the reference for a blank-canvas lesson, even when the design differs", () => {
+    const lesson = lessons.find((item) => item.id === "first-request")!;
+    const blankCanvasLesson = { ...lesson, blankCanvas: true };
+    const changed: Architecture = structuredClone(lesson.architecture);
+    changed.nodes.find((node) => node.kind === "server")!.capacity = 1;
+    expect(generateAlternatives(changed, blankCanvasLesson).find((alt) => alt.id === "reference")).toBeUndefined();
+  });
+
   it("recomputes cost on the changed node instead of carrying the old value", () => {
     const lesson = lessons.find((item) => item.id === "find-the-bottleneck")!;
     const scaled = generateAlternatives(lesson.architecture).find((alt) => alt.id === "scale-bottleneck")!;
@@ -89,7 +99,8 @@ describe("compareAlternative", () => {
   const base: SimulationResult = {
     engineVersion: "2.0.0", seed: 42, duration: 30, requestCount: 3000, completed: 3000, failed: 0, rejected: 0,
     p50: 20, p95: 50, p99: 70, throughput: 99, errorRate: 0, rejectedRate: 0, successRate: 1, staleReads: 0,
-    staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, costBreakdown: [], maxQueueDepth: 1,
+    staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, provisionedCost: 10, usageCost: 0, costBreakdown: [], maxQueueDepth: 1,
+    duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
     nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
   };
   const objectives = [criterion("p95", "lte", 60), criterion("errorRate", "lte", 0.01)];

@@ -43,10 +43,15 @@ export function remixLesson(lesson: Lesson, remixSeed: number): RemixedLesson {
   return { workload, factor, readShift, reference };
 }
 
-const labelFor = (metric: "maxQueueDepth" | "staleReadRate" | "rejectedRate", target: number): string => {
+type ScaledObjectiveMetric = "maxQueueDepth" | "staleReadRate" | "rejectedRate" | "duplicateRate" | "deadLetterRate" | "lostWrites";
+
+const labelFor = (metric: ScaledObjectiveMetric, target: number): string => {
   if (metric === "maxQueueDepth") return `Peak queue depth at most ${target}`;
   if (metric === "staleReadRate") return `Stale read rate at most ${Math.round(target * 1000) / 10}%`;
-  return `Rejected rate at most ${Math.round(target * 1000) / 10}%`;
+  if (metric === "rejectedRate") return `Rejected rate at most ${Math.round(target * 1000) / 10}%`;
+  if (metric === "duplicateRate") return `Duplicate deliveries at most ${Math.round(target * 1000) / 10}%`;
+  if (metric === "deadLetterRate") return `Dead-lettered jobs at most ${Math.round(target * 1000) / 10}%`;
+  return `Lost writes at most ${target}`;
 };
 
 /**
@@ -67,17 +72,25 @@ export function deriveRemixObjectives(lesson: Lesson, workload: Workload, refere
   const minReferenceThroughput = Math.min(...referenceResults.map((result) => result.throughput));
   const throughputTarget = Math.min(throughputFraction * workload.requestRate, Math.floor(0.9 * minReferenceThroughput));
 
+  // A lesson that tolerates some errors on purpose (poison jobs, a deliberate outage window) keeps its own
+  // error budget; everything else holds the 1% default.
+  const lessonErrorTarget = lesson.objectives.find((objective) => objective.metric === "errorRate")?.target ?? 0.01;
+  const worstErrorRate = Math.max(...referenceResults.map((result) => result.errorRate));
+  const errorTarget = Math.max(0.01, lessonErrorTarget, Math.round(worstErrorRate * 1.5 * 1000) / 1000);
+
   const objectives: Objective[] = [
     { id: "p95", label: `P95 latency at most ${p95Target} ms`, metric: "p95", operator: "lte", target: p95Target },
     { id: "throughput", label: `Throughput at least ${Math.round(throughputTarget)} req/s`, metric: "throughput", operator: "gte", target: throughputTarget },
-    { id: "errorRate", label: "Error rate at most 1%", metric: "errorRate", operator: "lte", target: 0.01 },
+    { id: "errorRate", label: `Error rate at most ${Math.round(errorTarget * 1000) / 10}%`, metric: "errorRate", operator: "lte", target: errorTarget },
     { id: "cost", label: `Infrastructure cost at most ${costTarget} credits`, metric: "cost", operator: "lte", target: costTarget },
   ];
 
-  for (const metric of ["maxQueueDepth", "staleReadRate", "rejectedRate"] as const) {
+  for (const metric of ["maxQueueDepth", "staleReadRate", "rejectedRate", "duplicateRate", "deadLetterRate", "lostWrites"] as const) {
     if (!lesson.objectives.some((objective) => objective.metric === metric)) continue;
     const worst = Math.max(...referenceResults.map((result) => result[metric] as number));
-    const target = metric === "maxQueueDepth" ? Math.round(worst * 1.5) : worst * 1.5;
+    const target = metric === "maxQueueDepth" ? Math.round(worst * 1.5)
+      : metric === "lostWrites" ? worst + 2
+      : worst * 1.5;
     objectives.push({ id: metric, label: labelFor(metric, target), metric, operator: "lte", target });
   }
 

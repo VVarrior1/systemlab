@@ -15,6 +15,7 @@ export function AccountDialog({ open, onOpenChange }: { open: boolean; onOpenCha
   const [error, setError] = useState("");
   const [sent, setSent] = useState(false);
   const [counts, setCounts] = useState({ designs: 0, progress: 0 });
+  const [graderMode, setGraderMode] = useState<"graded" | "self" | null>(null);
   const configured = isCloudConfigured();
 
   useEffect(() => {
@@ -44,6 +45,16 @@ export function AccountDialog({ open, onOpenChange }: { open: boolean; onOpenCha
     window.addEventListener("playground:storage", refresh);
     window.addEventListener("storage", refresh);
     return () => { window.removeEventListener("playground:storage", refresh); window.removeEventListener("storage", refresh); };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    fetch("/api/grade")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: { mode?: "graded" | "self" } | null) => { if (active) setGraderMode(body?.mode === "graded" ? "graded" : "self"); })
+      .catch(() => { if (active) setGraderMode("self"); });
+    return () => { active = false; };
   }, [open]);
 
   async function signIn(event: FormEvent<HTMLFormElement>) {
@@ -87,6 +98,7 @@ export function AccountDialog({ open, onOpenChange }: { open: boolean; onOpenCha
     <div className="account-content">
       <div className="account-identity"><span className="account-storage-icon">{user ? <Cloud size={22} /> : <HardDrive size={22} />}</span><div><strong>{user?.email || "Personal workspace"}</strong><span>{user ? "Connected account" : "Saved in this browser"}</span></div><span className="account-status"><span />{user ? "Connected" : "Local"}</span></div>
       <dl className="account-counts"><div><dt>Saved designs</dt><dd>{counts.designs}</dd></div><div><dt>Completed lessons</dt><dd>{counts.progress}</dd></div></dl>
+      {graderMode && <p className="account-grader-note">{graderMode === "graded" ? "Design-defense grader: on (Claude)" : "Design-defense grader: off: self-assessment; set ANTHROPIC_API_KEY on the server to enable"}</p>}
       {user ? <div className="account-cloud"><p>Sync to merge saved designs and completed lessons across your devices. Drafts stay in this browser.</p><div className="account-actions"><button type="button" className="button button-primary" disabled={!!busy} onClick={sync}>{busy === "sync" ? <LoaderCircle size={16} className="account-spin" /> : <RefreshCw size={16} />}Sync saved work</button><button type="button" className="button button-secondary" disabled={!!busy} onClick={signOut}><LogOut size={15} />Sign out</button></div></div> : configured ? <form className="account-signin" onSubmit={signIn}><label htmlFor="account-email">Email address</label><input id="account-email" type="email" autoComplete="email" required maxLength={254} value={email} onChange={(event) => { setEmail(event.target.value); setSent(false); }} placeholder="you@example.com" disabled={!!busy} /><button className="button button-primary" type="submit" disabled={!!busy || sent}>{busy === "email" ? <LoaderCircle size={16} className="account-spin" /> : sent ? <Check size={16} /> : <Mail size={16} />}{sent ? "Link sent" : "Send sign-in link"}</button><p>Sign in to sync saved work across devices.</p></form> : <p className="account-local-note">Your designs and progress are kept on this device. Clearing browser data removes these saves. Export individual designs from My designs to keep a copy.</p>}
       {message && <p className="account-message" role="status">{message}</p>}
       {error && <p className="account-error" role="alert">{error}</p>}
@@ -104,6 +116,7 @@ export function AccountDialog({ open, onOpenChange }: { open: boolean; onOpenCha
       .account-counts > div + div { border-left: 1px solid #e9eaed; padding-left: 25px; }
       .account-counts dt { font-size: 12px; color: #737780; }
       .account-counts dd { margin: 7px 0 0; font-size: 26px; font-weight: 600; }
+      .account-grader-note { margin: 16px 0 0; font-size: 11px; color: #737780; line-height: 1.6; }
       .account-cloud p, .account-local-note, .account-signin p { color: #737780; font-size: 13px; line-height: 1.7; margin: 20px 0 0; }
       .account-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
       .account-actions button, .account-signin button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 10px 14px; border: 1px solid #dee2e5; border-radius: 6px; background: #fff; color: #30343b; font: inherit; font-size: 13px; cursor: pointer; }

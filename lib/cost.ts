@@ -15,7 +15,45 @@ export const costRates: Record<Exclude<NodeKind, "traffic">, { base: number; cap
   "rate-limiter": { base: 1, cap: 5000, exp: 0.3, fixed: 0.3 },
 };
 
+/**
+ * Cost 2.1: usage on top of the provisioned bill, in credits per 1,000 operations per hour.
+ * The engine measures operations over the run and extrapolates them to an hour
+ * (count / duration * 3600), so a design pays for the traffic it actually serves as well as for
+ * the capacity it keeps switched on. Database writes are billed at twice the read rate;
+ * every hop that crosses a region is billed as a crossing.
+ */
+export const usageRates = {
+  database: 0.004,
+  cache: 0.0005,
+  cdn: 0.001,
+  queue: 0.0005,
+  server: 0.0005,
+  "rate-limiter": 0.0002,
+  crossRegion: 0.002,
+};
+
+/** Measured operations, already extrapolated to an hour by the caller. */
+export interface UsageCounts {
+  /** Server calls handled. */
+  server?: number;
+  /** Every database operation, reads and writes. */
+  database?: number;
+  /** The write share of `database`. Writes are billed twice, so these count again. */
+  databaseWrites?: number;
+  /** Cache lookups and write-throughs. */
+  cache?: number;
+  /** Edge hits served by a CDN. Misses are billed by whatever serves them. */
+  cdn?: number;
+  /** Messages delivered to a consumer. A redelivery is another delivery. */
+  queue?: number;
+  /** Decisions a rate limiter made, accepted or shed. */
+  "rate-limiter"?: number;
+  /** Hops that crossed a region boundary. */
+  crossRegion?: number;
+}
+
 const round = (value: number) => Math.round(value * 1000) / 1000;
+const per1000 = (operations: number | undefined, rate: number) => (Math.max(0, operations ?? 0) / 1000) * rate;
 
 /** Cost of one replica of a component. Traffic sources are free. */
 export function componentCost(node: Pick<SystemNode, "kind" | "capacity">): number {
@@ -35,4 +73,21 @@ export function nodeCost(node: SystemNode): number {
 
 export function architectureCost(nodes: SystemNode[]): number {
   return round(nodes.reduce((sum, node) => sum + nodeCost(node), 0));
+}
+
+/**
+ * The usage half of the bill. Counts are hourly operations; the rates are per 1,000 of them.
+ * A cheap idle design can still be expensive once traffic arrives, which is the point.
+ */
+export function usageCost(counts: UsageCounts): number {
+  const total =
+    per1000(counts.server, usageRates.server) +
+    per1000(counts.database, usageRates.database) +
+    per1000(counts.databaseWrites, usageRates.database) +
+    per1000(counts.cache, usageRates.cache) +
+    per1000(counts.cdn, usageRates.cdn) +
+    per1000(counts.queue, usageRates.queue) +
+    per1000(counts["rate-limiter"], usageRates["rate-limiter"]) +
+    per1000(counts.crossRegion, usageRates.crossRegion);
+  return round(total);
 }

@@ -144,7 +144,10 @@ export function lesson(input: LessonInput): Lesson {
 
 /** A design brief: clarify first, then estimate, build and defend. */
 export function brief(input: LessonInput & { clarifications: Clarification[] }): Lesson {
-  return lesson({ ...input, kind: "brief", remixable: input.remixable ?? false });
+  // Blank-canvas briefs start from a traffic-only graph; the authored reference is kept as-is
+  // (it is never shown to the learner, only used for grading).
+  const architecture = input.blankCanvas ? chain([node("traffic", "traffic", 0)]) : input.architecture;
+  return lesson({ ...input, architecture, kind: "brief", remixable: input.remixable ?? false });
 }
 
 const placeholder: Architecture = chain([node("traffic", "traffic", 0), node("server", "server", 1), node("database", "database", 2)]);

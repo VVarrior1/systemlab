@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getLesson } from "../../../lib/curriculum";
-import { gradeWithClaude, validateAnswers } from "../../../lib/grading";
+import { gradeWithClaude, generateFollowUps, validateAnswers, validateDesignText } from "../../../lib/grading";
 
 export const runtime = "nodejs";
 
@@ -22,6 +22,10 @@ function clientIp(req: Request): string {
   return forwarded.split(",")[0]!.trim();
 }
 
+export async function GET(): Promise<Response> {
+  return Response.json({ mode: process.env.ANTHROPIC_API_KEY ? "graded" : "self" }, { status: 200 });
+}
+
 export async function POST(req: Request): Promise<Response> {
   const ip = clientIp(req);
   if (rateLimited(ip)) {
@@ -38,9 +42,15 @@ export async function POST(req: Request): Promise<Response> {
   if (typeof body !== "object" || body === null) {
     return Response.json({ error: "Request body must be an object." }, { status: 400 });
   }
-  const { lessonId } = body as Record<string, unknown>;
+  const bodyRecord = body as Record<string, unknown>;
+  const { lessonId } = bodyRecord;
   if (typeof lessonId !== "string") {
     return Response.json({ error: "lessonId (string) is required." }, { status: 400 });
+  }
+
+  const stageRaw = bodyRecord.stage ?? "grade";
+  if (stageRaw !== "followups" && stageRaw !== "grade") {
+    return Response.json({ error: 'stage must be "followups" or "grade".' }, { status: 400 });
   }
 
   const lesson = getLesson(lessonId);
@@ -48,9 +58,34 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: "Unknown lesson." }, { status: 404 });
   }
 
+  if (stageRaw === "followups") {
+    let design: string;
+    try {
+      design = validateDesignText(bodyRecord.design);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid request.";
+      return Response.json({ error: message }, { status: 400 });
+    }
+
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return Response.json({ mode: "self", followUps: lesson.defense.followUps }, { status: 501 });
+    }
+
+    try {
+      const followUps = await generateFollowUps(lesson, design);
+      return Response.json({ mode: "graded", followUps }, { status: 200 });
+    } catch (error) {
+      if (error instanceof Anthropic.APIError) {
+        return Response.json({ error: `Interviewer service error: ${error.message}` }, { status: 502 });
+      }
+      const message = error instanceof Error ? error.message : "Follow-up generation failed.";
+      return Response.json({ error: message }, { status: 502 });
+    }
+  }
+
   let answers;
   try {
-    answers = validateAnswers((body as Record<string, unknown>).answers);
+    answers = validateAnswers(bodyRecord.answers, lesson);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Invalid request.";
     return Response.json({ error: message }, { status: 400 });

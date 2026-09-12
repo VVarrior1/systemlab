@@ -1,7 +1,7 @@
 "use client";
 import { memo, useMemo, useState, type DragEvent } from "react";
 import { Background, BackgroundVariant, Controls, Handle, MarkerType, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type Connection, type NodeChange, type NodePositionChange } from "@xyflow/react";
-import { Activity, ArrowRight, Copy, Database, Gauge, Globe, Globe2, Layers3, Maximize, Network, Plus, Redo2, RotateCcw, RotateCw, Server, ShieldAlert, Timer, Trash2, Undo2, Workflow, X, Zap } from "lucide-react";
+import { Activity, ArrowRight, Boxes, Copy, Database, Fingerprint, Gauge, Globe, Globe2, Layers3, Maximize, Network, Plus, Redo2, Repeat, RotateCcw, RotateCw, Server, ShieldAlert, Timer, Trash2, Undo2, Workflow, X, Zap } from "lucide-react";
 import type { Architecture, NodeKind, NodeMetric, SimulationResult, SystemNode } from "@/lib/types";
 import { componentCatalog, createSystemNode, normalizeNode } from "@/lib/templates";
 import { componentCost, nodeCost } from "@/lib/cost";
@@ -23,6 +23,7 @@ function specLine(node: SystemNode, settings: ReturnType<typeof normalizeNode>, 
     case "database":
       if (settings.dbMode === "sharded") return ["Sharded", `${settings.shards} shards`];
       if (settings.dbMode === "leader-follower") return ["Leader + followers", `${settings.replicationLagMs}ms lag`];
+      if (settings.dbMode === "quorum") return [`Quorum W${settings.quorumWrite}/R${settings.quorumRead}`, `of ${node.replicas} replicas`];
       return ["Single pool", node.replicas > 1 ? `${node.replicas} replicas` : `${node.capacity} req/s`];
     case "cache":
       if (settings.cacheModel === "keyed") return [`${settings.cacheEntries.toLocaleString()} entries`, settings.ttlMs > 0 ? `${settings.ttlMs}ms TTL${settings.coalesce ? " · coalesce" : ""}` : "no TTL"];
@@ -34,12 +35,20 @@ function specLine(node: SystemNode, settings: ReturnType<typeof normalizeNode>, 
   }
 }
 /** Server-only badges surfacing resilience settings that are actually turned on. */
-function serverBadges(settings: ReturnType<typeof normalizeNode>) {
+function serverBadges(node: SystemNode, settings: ReturnType<typeof normalizeNode>) {
   const badges: { icon: typeof Timer; label: string }[] = [];
   if (settings.timeoutMs > 0) badges.push({ icon: Timer, label: `${settings.timeoutMs}ms timeout` });
   if (settings.retries > 0) badges.push({ icon: RotateCw, label: `${settings.retries}× retry` });
   if (settings.circuitBreaker) badges.push({ icon: ShieldAlert, label: "breaker" });
   if (settings.maxQueue > 0) badges.push({ icon: Layers3, label: `${settings.maxQueue} queue` });
+  if (settings.poolSize > 0) badges.push({ icon: Boxes, label: `pool ${settings.poolSize}` });
+  if (node.role === "worker" && settings.idempotent) badges.push({ icon: Fingerprint, label: "idempotent" });
+  return badges;
+}
+/** Queue badges: at-least-once delivery is the setting worth surfacing at a glance. */
+function queueBadges(settings: ReturnType<typeof normalizeNode>) {
+  const badges: { icon: typeof Timer; label: string }[] = [];
+  if (settings.ackMode === "at-least-once") badges.push({ icon: Repeat, label: `at-least-once, ${settings.maxDeliveries} deliveries` });
   return badges;
 }
 
@@ -52,7 +61,7 @@ const SystemFlowNode = memo(function SystemFlowNode({ data }: NodeProps<FlowNode
   const directEndpointFailed = node.kind === "server" && node.role !== "worker" && !data.balanced && metric?.healthyReplicas !== undefined && metric.healthyReplicas < node.replicas;
   const offline = !node.enabled || metric?.healthyReplicas === 0 || directEndpointFailed;
   const [left, right] = specLine(node, settings, data.requestRate);
-  const badges = node.kind === "server" ? serverBadges(settings) : [];
+  const badges = node.kind === "server" ? serverBadges(node, settings) : node.kind === "queue" ? queueBadges(settings) : [];
   const regionTag = node.region && node.region !== "primary" ? node.region : null;
   return <div className={`system-node node-${node.kind} ${data.selected ? "node-selected" : ""} ${offline ? "node-disabled" : ""}`}>
     {node.kind !== "traffic" && <Handle type="target" position={Position.Left} className="node-handle" />}
@@ -170,6 +179,10 @@ function Canvas({ result, running, allowedKinds, onReset }: { result: Simulation
             <div className="inspector-section-title">SERVER</div>
             <label className="field-label">Role<select aria-label="Server role" value={selected.role || "application"} onChange={(e) => updateNode(selected.id, { role: e.target.value as "application" | "worker" })}><option value="application">Application server</option><option value="worker">Background worker</option></select></label>
             <p className="setting-note">A worker must be fed by a queue instead of routed traffic; its replicas pull jobs from the shared backlog.</p>
+            {selected.role === "worker" && <>
+              <label className="toggle-field"><span>Idempotent</span><input type="checkbox" checked={!!selected.idempotent} onChange={(e) => updateNode(selected.id, { idempotent: e.target.checked })} /></label>
+              <p className="setting-note">Dedups redelivered jobs by key, so a job the worker already finished counts as a duplicate instead of doing the work twice.</p>
+            </>}
             <label className="field-label">Fan-out<select aria-label="Dependency fan-out" value={selected.fanout ?? "parallel"} onChange={(e) => updateNode(selected.id, { fanout: e.target.value as SystemNode["fanout"] })}><option value="parallel">Parallel</option><option value="sequential">Sequential</option></select></label>
             <p className="setting-note">With several dependencies, parallel waits for the slowest reply; sequential adds up their times, one after another.</p>
             <div className="field-row"><label className="field-label">Dependency timeout <span>ms, 0 = none</span><input type="number" aria-label="Dependency timeout" min="0" max="60000" step="10" value={selected.timeoutMs ?? 0} onChange={(e) => updateNode(selected.id, { timeoutMs: Math.max(0, Math.min(60000, Number(e.target.value))) })} /></label><label className="field-label">Retries <span>0-3</span><input type="number" aria-label="Retries" min="0" max="3" value={selected.retries ?? 0} onChange={(e) => updateNode(selected.id, { retries: Math.max(0, Math.min(3, Number(e.target.value))) })} /></label></div>
@@ -177,8 +190,15 @@ function Canvas({ result, running, allowedKinds, onReset }: { result: Simulation
             <label className="field-label">Retry backoff <span>ms base, exponential + jitter</span><input type="number" aria-label="Retry backoff" min="0" max="10000" step="10" value={selected.retryBackoffMs ?? 50} onChange={(e) => updateNode(selected.id, { retryBackoffMs: Math.max(0, Math.min(10000, Number(e.target.value))) })} /></label>
             <label className="toggle-field"><span>Circuit breaker</span><input type="checkbox" checked={!!selected.circuitBreaker} onChange={(e) => updateNode(selected.id, { circuitBreaker: e.target.checked })} /></label>
             <p className="setting-note">Trips open after repeated dependency failures, failing calls fast instead of piling up timeouts; recovers after a cooldown.</p>
+            {selected.circuitBreaker && <>
+              <div className="field-row"><label className="field-label">Breaker window <span>ms</span><input type="number" aria-label="Breaker window" min="100" max="60000" step="100" value={selected.breakerWindowMs ?? 1000} onChange={(e) => updateNode(selected.id, { breakerWindowMs: Math.max(100, Math.min(60000, Number(e.target.value))) })} /></label><label className="field-label">Min calls <span>to evaluate</span><input type="number" aria-label="Breaker minimum calls" min="1" max="1000" value={selected.breakerMinCalls ?? 20} onChange={(e) => updateNode(selected.id, { breakerMinCalls: Math.max(1, Math.min(1000, Number(e.target.value))) })} /></label></div>
+              <div className="field-row"><label className="field-label">Failure ratio <span>0-1 to open</span><input type="number" aria-label="Breaker failure ratio" min="0.05" max="1" step="0.05" value={selected.breakerFailureRatio ?? 0.5} onChange={(e) => updateNode(selected.id, { breakerFailureRatio: Math.max(0.05, Math.min(1, Number(e.target.value))) })} /></label><label className="field-label">Open time <span>ms cooldown</span><input type="number" aria-label="Breaker open time" min="0" max="600000" step="100" value={selected.breakerOpenMs ?? 5000} onChange={(e) => updateNode(selected.id, { breakerOpenMs: Math.max(0, Math.min(600000, Number(e.target.value))) })} /></label></div>
+              <p className="setting-note">Opens once at least the minimum calls land in the window and the failure share crosses the ratio; stays open for the cooldown before letting a trial call through.</p>
+            </>}
             <label className="field-label">Queue bound <span>0 = unbounded</span><input type="number" aria-label="Queue bound" min="0" max="100000" step="5" value={selected.maxQueue ?? 0} onChange={(e) => updateNode(selected.id, { maxQueue: Math.max(0, Math.min(100000, Number(e.target.value))) })} /></label>
             <p className="setting-note">Arrivals beyond the bound (per replica) are rejected immediately instead of waiting — a real backpressure valve rather than an ever-growing queue.</p>
+            <label className="field-label">Pool size <span>0 = unlimited in-flight calls</span><input type="number" aria-label="Pool size" min="0" max="10000" value={selected.poolSize ?? 0} onChange={(e) => updateNode(selected.id, { poolSize: Math.max(0, Math.min(10000, Number(e.target.value))) })} /></label>
+            <p className="setting-note">Bounds concurrent dependency calls per replica; excess calls wait in the pool queue above, or are rejected as pool-exhausted once it fills — a slow dependency can starve an otherwise idle server.</p>
           </div>}
           {selected.kind === "load-balancer" && <div className="inspector-section">
             <div className="inspector-section-title">LOAD BALANCER</div>
@@ -189,8 +209,12 @@ function Canvas({ result, running, allowedKinds, onReset }: { result: Simulation
           </div>}
           {selected.kind === "database" && <div className="inspector-section">
             <div className="inspector-section-title">DATABASE</div>
-            <label className="field-label">Mode<select aria-label="Database mode" value={selected.dbMode ?? "single"} onChange={(e) => updateNode(selected.id, { dbMode: e.target.value as SystemNode["dbMode"] })}><option value="single">Single pool</option><option value="leader-follower">Leader + followers</option><option value="sharded">Sharded</option></select></label>
-            <p className="setting-note">Single pool is one idealized capacity. Leader + followers splits reads across replicas with lag. Sharded splits keys across independent lanes that can be uneven under skew.</p>
+            <label className="field-label">Mode<select aria-label="Database mode" value={selected.dbMode ?? "single"} onChange={(e) => updateNode(selected.id, { dbMode: e.target.value as SystemNode["dbMode"] })}><option value="single">Single pool</option><option value="leader-follower">Leader + followers</option><option value="sharded">Sharded</option><option value="quorum">Quorum</option></select></label>
+            <p className="setting-note">Single pool is one idealized capacity. Leader + followers splits reads across replicas with lag. Sharded splits keys across independent lanes that can be uneven under skew. Quorum requires W/R replicas to ack each write/read.</p>
+            {selectedSettings.dbMode === "quorum" && <>
+              <div className="field-row"><label className="field-label">Write quorum (W) <span>of {selected.replicas} replicas</span><input type="number" aria-label="Write quorum" min="1" max={selected.replicas} value={selected.quorumWrite ?? 2} onChange={(e) => updateNode(selected.id, { quorumWrite: Math.max(1, Math.min(selected.replicas, Number(e.target.value))) })} /></label><label className="field-label">Read quorum (R) <span>of {selected.replicas} replicas</span><input type="number" aria-label="Read quorum" min="1" max={selected.replicas} value={selected.quorumRead ?? 2} onChange={(e) => updateNode(selected.id, { quorumRead: Math.max(1, Math.min(selected.replicas, Number(e.target.value))) })} /></label></div>
+              <p className="setting-note">A write needs W acks (latency set by the W-th fastest replica); a read needs R. Fewer than W healthy replicas fails writes. {(selected.quorumWrite ?? 2) + (selected.quorumRead ?? 2) > selected.replicas ? `R + W > N (${selected.replicas}): no stale reads.` : `R + W ≤ N (${selected.replicas}): reads can go stale by the replication lag.`}</p>
+            </>}
             {selectedSettings.dbMode === "leader-follower" && <>
               <div className="field-row"><label className="field-label">Replication lag <span>ms</span><input type="number" aria-label="Replication lag" min="0" max="60000" step="10" value={selected.replicationLagMs ?? 200} onChange={(e) => updateNode(selected.id, { replicationLagMs: Math.max(0, Math.min(60000, Number(e.target.value))) })} /></label><label className="field-label">Failover time <span>ms</span><input type="number" aria-label="Failover time" min="0" max="60000" step="10" value={selected.failoverMs ?? 3000} onChange={(e) => updateNode(selected.id, { failoverMs: Math.max(0, Math.min(60000, Number(e.target.value))) })} /></label></div>
               <label className="field-label">Consistency<select aria-label="Consistency" value={selected.consistency ?? "eventual"} onChange={(e) => updateNode(selected.id, { consistency: e.target.value as SystemNode["consistency"] })}><option value="eventual">Eventual</option><option value="read-your-writes">Read-your-writes</option></select></label>
@@ -215,6 +239,12 @@ function Canvas({ result, running, allowedKinds, onReset }: { result: Simulation
             <div className="inspector-section-title">QUEUE</div>
             <label className="field-label">Queue bound <span>0 = unbounded</span><input type="number" aria-label="Queue bound" min="0" max="100000" step="5" value={selected.maxQueue ?? 0} onChange={(e) => updateNode(selected.id, { maxQueue: Math.max(0, Math.min(100000, Number(e.target.value))) })} /></label>
             <p className="setting-note">Jobs beyond the bound are rejected immediately instead of backing up forever.</p>
+            <label className="field-label">Ack mode<select aria-label="Ack mode" value={selected.ackMode ?? "at-most-once"} onChange={(e) => updateNode(selected.id, { ackMode: e.target.value as SystemNode["ackMode"] })}><option value="at-most-once">At-most-once</option><option value="at-least-once">At-least-once</option></select></label>
+            <p className="setting-note">At-most-once: a job lost with a dead worker is gone. At-least-once: it is redelivered after the visibility timeout — a worker that isn&apos;t idempotent counts a redelivered but already-finished job as a duplicate.</p>
+            {selectedSettings.ackMode === "at-least-once" && <>
+              <div className="field-row"><label className="field-label">Visibility timeout <span>ms</span><input type="number" aria-label="Visibility timeout" min="0" max="600000" step="100" value={selected.visibilityTimeoutMs ?? 2000} onChange={(e) => updateNode(selected.id, { visibilityTimeoutMs: Math.max(0, Math.min(600000, Number(e.target.value))) })} /></label><label className="field-label">Max deliveries<input type="number" aria-label="Max deliveries" min="1" max="20" value={selected.maxDeliveries ?? 3} onChange={(e) => updateNode(selected.id, { maxDeliveries: Math.max(1, Math.min(20, Number(e.target.value))) })} /></label></div>
+              <p className="setting-note">A worker that dies or outlasts the visibility timeout causes redelivery; a job redelivered more than this many times is dead-lettered instead of retried forever.</p>
+            </>}
           </div>}
           {selected.kind === "rate-limiter" && <div className="inspector-section">
             <div className="inspector-section-title">RATE LIMITER</div>

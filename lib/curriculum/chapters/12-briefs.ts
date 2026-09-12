@@ -18,18 +18,19 @@ import {
 } from "../shared";
 
 /**
- * Chapter 11 - Design briefs. Expert, clarify-first missions: the prompt is deliberately
+ * Chapter 12 - Design briefs. Expert, clarify-first missions: the prompt is deliberately
  * under-specified, and the workload only makes sense once the relevant questions are asked.
- * Each reference below was measured on seeds [lesson seed, 123, 2026]; the objectives sit
+ * Since v2.1 every brief is a blank canvas (`blankCanvas: true`): the learner starts from a
+ * traffic-only graph, the reference below is never shown, and grading is objectives plus
+ * runnability only - any architecture that runs and clears the targets passes.
+ * Each reference was measured on seeds [lesson seed, 123, 2026]; the objectives sit
  * roughly 25-40% above the worst measured value so a remix still has room.
  */
 
+/** Every blank-canvas brief starts here: traffic and nothing else. */
+const blankCanvasStarter = chain([node("traffic", "traffic", 0)]);
+
 // ------------------------------------------------------------------ url-shortener
-const shortenerStarter = chain([
-  node("traffic", "traffic", 0),
-  node("server", "api", 1, { label: "Redirect API", capacity: 300 }),
-  node("database", "db", 2, { label: "Link store", capacity: 200 }),
-]);
 const shortenerReference = graph(
   [
     node("traffic", "traffic", 0),
@@ -42,11 +43,6 @@ const shortenerReference = graph(
 );
 
 // ------------------------------------------------------------------ news-feed
-const feedStarter = chain([
-  node("traffic", "traffic", 0),
-  node("server", "api", 1, { label: "Feed API", capacity: 300 }),
-  node("database", "db", 2, { label: "Timeline store", capacity: 200 }),
-]);
 const feedReference = graph(
   [
     node("traffic", "traffic", 0),
@@ -59,11 +55,6 @@ const feedReference = graph(
 );
 
 // ------------------------------------------------------------------ ticket-sale
-const ticketStarter = chain([
-  node("traffic", "traffic", 0),
-  node("server", "api", 1, { label: "Checkout API", capacity: 300 }),
-  node("database", "db", 2, { label: "Inventory DB", capacity: 200 }),
-]);
 const ticketReference = graph(
   [
     node("traffic", "traffic", 0),
@@ -77,13 +68,6 @@ const ticketReference = graph(
 );
 
 // ------------------------------------------------------------------ chat-and-notifications
-const chatStarter = chain([
-  node("traffic", "traffic", 0),
-  node("server", "intake", 1, { label: "Message intake", capacity: 250, region: "us-east" }),
-  node("queue", "queue", 2, { label: "Delivery queue", region: "us-east" }),
-  node("server", "worker", 3, { label: "Delivery worker", role: "worker", capacity: 200, region: "us-east" }),
-  node("database", "db", 4, { label: "Message store", capacity: 200, region: "us-east" }),
-]);
 const chatReference = graph(
   [
     node("traffic", "traffic", 0),
@@ -97,11 +81,6 @@ const chatReference = graph(
 );
 
 // ------------------------------------------------------------------ metrics-ingestion
-const metricsStarter = chain([
-  node("traffic", "traffic", 0),
-  node("server", "ingest", 1, { label: "Ingest API", capacity: 400 }),
-  node("database", "db", 2, { label: "Series store", capacity: 300 }),
-]);
 const metricsReference = graph(
   [
     node("traffic", "traffic", 0),
@@ -125,7 +104,7 @@ export const chapter: ChapterFile = {
       minutes: 25,
       concept: "Read-heavy design",
       brief:
-        "A growth team wants short links for its campaigns. The whole prompt you are given is: 'people paste a long URL, we hand back a short one, and clicking it should be instant even when a campaign goes viral - and please keep it cheap.' Nobody has told you how much traffic there is, how it is spread across links, what 'instant' means, or whether an edited link may take a moment to propagate. Ask before you build.",
+        "A growth team wants short links for its campaigns. The whole prompt you are given is: 'people paste a long URL, we hand back a short one, and clicking it should be instant even when a campaign goes viral - and please keep it cheap.' Nobody has told you how much traffic there is, how it is spread across links, what 'instant' means, or whether an edited link may take a moment to propagate. Ask before you build. The canvas is empty - there is no starter design and no required shape, so any architecture that runs and clears the targets is a pass, and you will be asked to defend the one you chose.",
       learning: [
         "A shortener is the purest read-heavy system in the catalogue: creating a link is a single small write, and every click afterwards is a key lookup that must return a redirect. Once you know the ratio is around a hundred to one, the shape of the answer is fixed before you draw anything - the write path can live on one modest primary for years, and essentially all of the engineering goes into keeping repeated reads away from storage. The interview signal is whether you establish that ratio first and let it dictate the components, rather than reaching for a cache because caches are familiar.",
         "Skew is the second thing to establish, because it decides whether a cache is worth anything. If clicks were spread uniformly over every link ever created, a cache holding a fraction of the key space would mostly miss and you would be paying for nothing. Real campaign traffic is extremely concentrated: a few thousand live links carry almost all clicks, so a keyed cache sized to comfortably hold that working set converts nearly every read into a hit. State the working set, size the cache to exceed it, and you can predict the hit rate instead of guessing at a dial.",
@@ -135,12 +114,13 @@ export const chapter: ChapterFile = {
         "What this model idealizes: redirects here terminate at your own cache, whereas a real shortener would let the browser and a CDN cache the redirect response itself, moving a large share of traffic off your infrastructure entirely. The simulation also ignores the size of the link table, the cost of storing click events, and the moderation and abuse workload that any public shortener acquires within days of launching. Treat the measured numbers as the shape of the answer, and name those three omissions when you defend it.",
       ],
       hints: [
-        "Run the starter first and read the utilization column: one component is pinned and everything else is idle.",
+        "The canvas is empty, so start from the request itself: draw the smallest path that can answer a redirect, run it, and read the utilization column to see what pins first.",
         "Work out how much traffic actually has to reach storage once repeated redirects are served from memory - the writes plus the reads that miss.",
-        "Spread the front door across replicas behind a balancer, and keep the storage tier sized for the miss traffic rather than the front-door rate.",
+        "Spread the front door across replicas behind a balancer and keep the storage tier sized for the miss traffic rather than the front-door rate; any shape that clears the targets counts.",
       ],
       objectives: [...healthy(760, 90), budget(65)],
-      architecture: shortenerStarter,
+      architecture: blankCanvasStarter,
+      blankCanvas: true,
       reference: shortenerReference,
       workload: workload({ requestRate: 800, readRatio: 0.99, duration: 30, seed: 11, keySpace: 5000, keySkew: 0.85 }),
       allowedKinds: allKinds,
@@ -223,7 +203,7 @@ export const chapter: ChapterFile = {
       minutes: 30,
       concept: "Fan-out strategy",
       brief:
-        "A social product asks you to design its home feed: 'when someone opens the app they should see a fresh timeline of posts from the people they follow, immediately, and it has to work when a celebrity posts.' You are not told how many people post versus scroll, how fresh 'fresh' has to be, how wide the follow graph gets, or what the latency target is. Every one of those answers moves the design.",
+        "A social product asks you to design its home feed: 'when someone opens the app they should see a fresh timeline of posts from the people they follow, immediately, and it has to work when a celebrity posts.' You are not told how many people post versus scroll, how fresh 'fresh' has to be, how wide the follow graph gets, or what the latency target is. Every one of those answers moves the design. You start from an empty canvas: nothing is placed for you, no shape is prescribed, and anything that runs and meets the targets passes - so the components you place are your argument.",
       learning: [
         "The central decision is where the join between 'who I follow' and 'what they posted' happens. Fan-out on write materialises a timeline per user at post time: a write costs one insert per follower, and a read is a single cheap range scan over a precomputed list. Fan-out on read stores posts once and merges the followed authors' posts at request time: writes are trivial and reads are expensive. With a read-dominated feed the first is almost always right, because you are paying once per post to make millions of reads cheap - but you have to know the ratio before you can say that.",
         "The hybrid is the answer interviewers are listening for. Fan-out on write breaks precisely when one author has millions of followers: a single post becomes millions of inserts and the write path stalls for everyone. So you fan out on write for ordinary accounts and leave a small set of very-high-follower accounts to be merged in at read time, giving each reader one cheap precomputed list plus a handful of celebrity lookups. Say the threshold is a tuned number, and that you would measure the distribution of follower counts before choosing it.",
@@ -234,12 +214,13 @@ export const chapter: ChapterFile = {
         "What this model idealizes: the simulation exercises the read path, not the fan-out write amplification - a real fan-out on write turns one post into thousands of inserts, and that asymmetry is the whole reason the hybrid exists. It also ignores timeline storage growth, deletions and unfollows rewriting materialised lists, and media, which belongs in object storage behind a CDN and never touches this path. Name those three when you defend the design.",
       ],
       hints: [
-        "Measure the starter first and note which component saturates and which one has room; the ratio between them tells you what kind of problem this is.",
+        "Nothing is placed for you, so build the simplest path that can serve a timeline and measure it; which component saturates and which has room tells you what kind of problem this is.",
         "Decide where the join happens before you place components, then work out how much read traffic survives a cache holding the active working set.",
-        "Partition the timeline store by its owner so reads and writes spread evenly, and keep the front door replicated behind a balancer.",
+        "Partition the timeline store by its owner so reads and writes spread evenly, keep the front door replicated behind a balancer, and let the targets rather than a prescribed shape decide when you are done.",
       ],
       objectives: [...healthy(665, 95), budget(65)],
-      architecture: feedStarter,
+      architecture: blankCanvasStarter,
+      blankCanvas: true,
       reference: feedReference,
       workload: workload({ requestRate: 700, readRatio: 0.9, duration: 30, seed: 12, keySpace: 20000, keySkew: 0.75 }),
       allowedKinds: allKinds,
@@ -321,7 +302,7 @@ export const chapter: ChapterFile = {
       minutes: 30,
       concept: "Flash crowds & admission control",
       brief:
-        "A venue sells tickets for a single show and the sale opens at a fixed minute. The brief you are handed is one sentence: 'everyone arrives at once, nobody should get an error page, and we must never sell the same seat twice.' Nothing in that tells you how many people arrive, how far above normal that is, how long the surge lasts, or whether turning some buyers away politely is acceptable. Those answers decide whether you build for the peak or shed it.",
+        "A venue sells tickets for a single show and the sale opens at a fixed minute. The brief you are handed is one sentence: 'everyone arrives at once, nobody should get an error page, and we must never sell the same seat twice.' Nothing in that tells you how many people arrive, how far above normal that is, how long the surge lasts, or whether turning some buyers away politely is acceptable. Those answers decide whether you build for the peak or shed it. The canvas is empty, so there is no design to adjust: build whatever you can defend, and any architecture that runs and clears the targets passes.",
       learning: [
         "A flash crowd is not a big steady load; it is a short, enormous multiple of one. Establish two numbers before anything else: the peak factor and the duration. A six-fold surge lasting a couple of seconds is a fundamentally different engineering problem from a six-fold surge lasting an hour, because the first can be absorbed by a queue or shed at the door while the second has to be provisioned for. Ask for both, and say which one you are designing against - candidates who only ask 'how much traffic' get a number that is useless without its shape.",
         "Once you know the surge is brief, the real question is admission control: do you build capacity for the peak, or admit what you can serve and turn the rest away quickly? Provisioning for a six-fold peak means paying for six times the machines every minute of every day for a spike that lasts seconds - which is exactly what a cost ceiling is there to prevent. The alternative is a token-bucket rate limiter at the front door sized near what the system can genuinely serve, with a burst allowance that absorbs the first instant of the stampede.",
@@ -332,9 +313,9 @@ export const chapter: ChapterFile = {
         "What this model idealizes: the simulation gives you the traffic shape, the shedding behaviour and the latency of accepted requests, but not the correctness of the seat decrement, the waiting-room user experience, or payment providers who have their own rate limits and timeouts. It also treats every rejected request as one lost user, whereas real buyers refresh. Assume retries make your effective peak worse than the number you were given, and design the limiter with that in mind.",
       ],
       hints: [
-        "Run the starter and watch the timeline rather than the summary: find the moment the surge arrives and see how long the damage lasts after it passes.",
+        "The canvas is empty, so sketch a checkout path you can measure and watch the timeline rather than the summary: find the moment the surge arrives and see how long the damage lasts after it passes.",
         "Compare what the surge demands with what your budget lets you provision, then decide whether the answer is capacity or admission control.",
-        "Put something at the front door that can turn traffic away instantly, and give the hot-key read path a way to collapse concurrent misses into one fetch.",
+        "Put something at the front door that can turn traffic away instantly, and give the hot-key read path a way to collapse concurrent misses into one fetch; any design that clears the targets passes.",
       ],
       objectives: [
         objective("p95", "lte", 110),
@@ -343,7 +324,8 @@ export const chapter: ChapterFile = {
         rejected(0.26),
         budget(55),
       ],
-      architecture: ticketStarter,
+      architecture: blankCanvasStarter,
+      blankCanvas: true,
       reference: ticketReference,
       workload: workload({ requestRate: 350, readRatio: 0.8, duration: 30, seed: 13, pattern: "flash", keySpace: 200, keySkew: 0.9 }),
       allowedKinds: allKinds,
@@ -424,7 +406,7 @@ export const chapter: ChapterFile = {
       minutes: 30,
       concept: "Asynchronous delivery",
       brief:
-        "A team messaging product needs to accept messages and deliver them to recipients, including people who are offline and will collect them later. The prompt is: 'sending should feel instant, nothing should ever be lost, and it has to work for our European customers too.' You are not told the send rate, the read/write mix, where the users are, what ordering guarantee is required, or how long undelivered messages must survive. Ask first.",
+        "A team messaging product needs to accept messages and deliver them to recipients, including people who are offline and will collect them later. The prompt is: 'sending should feel instant, nothing should ever be lost, and it has to work for our European customers too.' You are not told the send rate, the read/write mix, where the users are, what ordering guarantee is required, or how long undelivered messages must survive. Ask first. Nothing is placed on the canvas for you and no particular topology is required - any design that runs and meets the targets is a pass, so the pipeline you draw is the answer you are defending.",
       learning: [
         "Chat inverts the usual ratio: most traffic is writes. Sending a message is a durable write plus a fan-out to recipients, and reading history is comparatively rare because clients hold what they already received. That single fact removes the cache from the centre of the design - there is little repeated read traffic to absorb - and puts the write path and its durability guarantees in the spotlight instead. Establish the ratio in clarification, then say out loud that this is a write-heavy system and that the expensive component will therefore be storage, not the read tier.",
         "Split the request into the part the sender waits for and the part they do not. Accepting a message means validating it, writing it durably and handing it to a queue; delivery, fan-out, push notifications and badge counts happen behind that boundary. The sender's latency is then the intake path only, which is short and predictable, while the slow and failure-prone work is retried by workers without anyone watching a spinner. This is the standard producer-queue-consumer shape, and the sentence to say is that acknowledgement happens after the durable write, not after delivery.",
@@ -436,12 +418,13 @@ export const chapter: ChapterFile = {
         "What this model idealizes: real chat runs over persistent connections, so there is a whole connection-management tier - gateways holding millions of sockets, presence, and consistent hashing to route a message to the right gateway - that this request-response simulation does not represent. Push notification providers, encryption, and read receipts multiplying the write volume are also absent. Name them, and be clear that what you are sizing here is the intake, queue, worker and storage pipeline behind that socket layer.",
       ],
       hints: [
-        "Look at the read/write mix first: it tells you which tier will be expensive and rules out the component you would reach for by reflex.",
+        "Start from the read/write mix rather than from components - nothing is on the canvas yet: it tells you which tier will be expensive and rules out the one you would reach for by reflex.",
         "Separate what the sender waits for from what can happen behind an acknowledgement, and check what the intake path alone costs.",
-        "Size the worker pool from the arrival rate with real headroom, bound the backlog so failure is immediate rather than slow, and spread storage by conversation.",
+        "Size the worker pool from the arrival rate with real headroom, bound the backlog so failure is immediate rather than slow, and spread storage by conversation; the targets, not a prescribed shape, decide whether it passes.",
       ],
       objectives: [...healthy(475, 230), budget(75)],
-      architecture: chatStarter,
+      architecture: blankCanvasStarter,
+      blankCanvas: true,
       reference: chatReference,
       workload: workload({
         requestRate: 500,
@@ -534,7 +517,7 @@ export const chapter: ChapterFile = {
       minutes: 35,
       concept: "Write-heavy ingest & backpressure",
       brief:
-        "The platform team wants a service that accepts metric samples from every host and container in the fleet and stores them for dashboards and alerts. All you are told is: 'the fleet is growing, we cannot lose the alerting signal, and last time the storage layer got slow it took the whole pipeline with it.' Nobody has said how many samples per second, how the load varies through the day, or whether dropping some samples is preferable to falling over.",
+        "The platform team wants a service that accepts metric samples from every host and container in the fleet and stores them for dashboards and alerts. All you are told is: 'the fleet is growing, we cannot lose the alerting signal, and last time the storage layer got slow it took the whole pipeline with it.' Nobody has said how many samples per second, how the load varies through the day, or whether dropping some samples is preferable to falling over. The canvas is empty: there is no starter pipeline and no required shape, and any architecture that runs and clears the targets passes.",
       learning: [
         "Metrics ingestion is the most write-heavy system most engineers ever build: samples arrive constantly, reads are a comparatively small trickle from dashboards and alert evaluations, and the ratio can reach a hundred writes per read. That inverts every reflex from a product service - there is no hot read set for a cache to absorb, so the cache you would reach for by habit does nothing here. The expensive, hard-to-scale component is the storage tier, and the whole design is about spreading writes across it and controlling what happens when it slows down.",
         "Sharding is the primary lever, and the shard key is the design decision. Hashing on the series identity - the metric name plus its label set - spreads writes evenly and keeps all samples for one series together, which is what range queries need. Sharding by time instead concentrates every write in the fleet onto whichever shard owns the current window, manufacturing a hot partition by construction. Derive the shard count from the write rate divided by a per-shard capacity you are willing to defend, then add headroom, because a metrics pipeline's load grows with the fleet it is watching.",
@@ -546,9 +529,9 @@ export const chapter: ChapterFile = {
         "What this model idealizes: the simulation gives you write volume, shedding and the brownout, but not compaction, retention enforcement, cardinality explosions or the write-ahead log that makes ingestion durable across a restart. It also treats every sample as equal, whereas the real design's most important property is that alerting data has its own budget. Name those, and be explicit that the number you measured is the ingest tier's behaviour, not the storage engine's steady-state cost.",
       ],
       hints: [
-        "Run the starter and watch what happens after the storage tier slows down, not just during: the damage outlasts the event.",
+        "Nothing is on the canvas, so build an ingest path you can measure, then watch what happens after the storage tier slows down rather than only during: the damage outlasts the event.",
         "Work out the per-shard arrival rate, then ask what is left of each shard's effective capacity while storage is running several times slower.",
-        "Spread the writes wide enough that a slowdown still leaves headroom, and put something at the front door that caps what you admit as load climbs.",
+        "Spread the writes wide enough that a slowdown still leaves headroom, and put something at the front door that caps what you admit as load climbs; any architecture that clears the targets passes.",
       ],
       objectives: [
         objective("p95", "lte", 340),
@@ -557,7 +540,8 @@ export const chapter: ChapterFile = {
         rejected(0.12),
         budget(170),
       ],
-      architecture: metricsStarter,
+      architecture: blankCanvasStarter,
+      blankCanvas: true,
       reference: metricsReference,
       workload: workload({
         requestRate: 900,

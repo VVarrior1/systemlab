@@ -89,7 +89,8 @@ function trimReplicas(architecture: Architecture): Alternative | null {
   const trimmed = clone(architecture);
   let changed = false;
   for (const node of trimmed.nodes) {
-    if (node.replicas >= 2) {
+    const quorumFloor = node.kind === "database" && node.dbMode === "quorum" ? Math.max(node.quorumWrite ?? 2, node.quorumRead ?? 2) : 1;
+    if (node.replicas >= 2 && node.replicas - 1 >= quorumFloor) {
       node.replicas -= 1;
       changed = true;
     }
@@ -105,6 +106,8 @@ function trimReplicas(architecture: Architecture): Alternative | null {
 
 function referenceAlternative(lesson: Lesson | undefined, architecture: Architecture): Alternative | null {
   if (!lesson) return null;
+  // Blank-canvas briefs never reveal the instructor's reference design.
+  if (lesson.blankCanvas) return null;
   if (JSON.stringify(lesson.reference) === JSON.stringify(architecture)) return null;
   return {
     id: "reference",

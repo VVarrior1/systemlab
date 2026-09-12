@@ -93,7 +93,7 @@ export const readings: Record<string, Reading[]> = {
     },
     {
       title: "Problems with CAP, and Yahoo's little known NoSQL system",
-      url: "http://dbmsmusings.blogspot.com/2010/04/problems-with-cap-and-yahoos-little.html",
+      url: "https://dbmsmusings.blogspot.com/2010/04/problems-with-cap-and-yahoos-little.html",
       source: "Daniel Abadi",
       why: "Introduces PACELC, the extension this lesson needs: even with no partition, every system still trades latency against consistency.",
       minutes: 10,

@@ -16,7 +16,7 @@ export interface NodeTelemetry {
   cacheHits: number;
   cacheCoalesced: number;
   cacheModel: "probabilistic" | "keyed";
-  dbMode: "single" | "leader-follower" | "sharded";
+  dbMode: "single" | "leader-follower" | "sharded" | "quorum";
   staleServed: number;
   detectionFailures: number;
   healthCheckMs: number;
@@ -25,6 +25,24 @@ export interface NodeTelemetry {
   timeoutMs: number;
   maxQueue: number;
   shardUtilization?: number[];
+  poolSize: number;
+  poolWaits: number;
+  poolWaitMs: number;
+  poolIdleWaits: number;
+  poolRejections: number;
+  quorumFailures: number;
+  quorumWrite: number;
+  quorumRead: number;
+  ackMode: "at-most-once" | "at-least-once";
+  idempotent: boolean;
+  deliveries: number;
+  redeliveries: number;
+  duplicates: number;
+  deduped: number;
+  deadLettered: number;
+  burstErrors: number;
+  flapCycles: number;
+  usageCost: number;
 }
 
 export interface Telemetry {
@@ -60,6 +78,18 @@ export interface Telemetry {
   steadyDbRate: number;
   hasCacheFlush: boolean;
   hasQueue: boolean;
+  duplicates: number;
+  duplicateRate: number;
+  dedupedDuplicates: number;
+  redeliveries: number;
+  deadLettered: number;
+  deadLetterRate: number;
+  lostWrites: number;
+  poolRejections: number;
+  provisionedCost: number;
+  usageCost: number;
+  cost: number;
+  deadlineMs: number;
   events: SimulationEvent[];
   nodes: NodeTelemetry[];
   failures: FailureEvent[];
@@ -163,7 +193,7 @@ export function buildInsights(telemetry: Telemetry): Insight[] {
     insights.push({
       severity: "warning",
       title: `Circuit breakers opened ${count(breakerOpens)} time${breakerOpens === 1 ? "" : "s"}`,
-      detail: `${owners.map((node) => `${node.label}: ${count(node.breakerOpens)}`).join("; ")}. A breaker opens after at least 20 dependency calls in one second with at least 50% failures, and then fails calls in microseconds for five seconds. Those fast failures are counted as rejected, not as errors: the breaker converts a slow, resource-consuming failure into a cheap one and gives the dependency room to recover.`,
+      detail: `${owners.map((node) => `${node.label}: ${count(node.breakerOpens)}`).join("; ")}. A breaker opens once its window holds enough calls and enough of them failed, and then fails calls in microseconds until it probes again. Those fast failures are counted as rejected, not as errors: the breaker converts a slow, resource-consuming failure into a cheap one and gives the dependency room to recover. Widening the window or raising the minimum call count makes it slower to trip and slower to protect you.`,
       ...(owners.length === 1 ? { nodeId: owners[0].id } : {}),
     });
   }
@@ -183,8 +213,8 @@ export function buildInsights(telemetry: Telemetry): Insight[] {
   if (telemetry.deadlineTimeouts > 0) {
     insights.push({
       severity: "critical",
-      title: `${count(telemetry.deadlineTimeouts)} requests hit the 5,000 ms deadline`,
-      detail: `These requests were still queued or waiting on a dependency after five seconds and were abandoned. They count as errors, not as rejections, and they are excluded from the latency percentiles, so a design that times out everything can still report a small p95 over the handful that made it. Compare successRate (${percent(telemetry.successRate)}) with p95 before believing a latency number.`,
+      title: `${count(telemetry.deadlineTimeouts)} requests hit the ${count(telemetry.deadlineMs)} ms deadline`,
+      detail: `These requests were still queued or waiting on a dependency after ${round(telemetry.deadlineMs / 1000)}s and were abandoned. They count as errors, not as rejections, and they are excluded from the latency percentiles, so a design that times out everything can still report a small p95 over the handful that made it. Compare successRate (${percent(telemetry.successRate)}) with p95 before believing a latency number.`,
     });
   }
 
@@ -268,6 +298,92 @@ export function buildInsights(telemetry: Telemetry): Insight[] {
       severity: telemetry.maxQueueDepth > telemetry.workload.requestRate ? "warning" : "good",
       title: "Queued work is measured through completion",
       detail: `Peak backlog was ${count(telemetry.maxQueueDepth)} jobs against an arrival rate of ${count(telemetry.workload.requestRate)}/s. Accepting a job into a queue is not success: it still has to be processed inside the five-second deadline, and by Little's law the wait is backlog divided by drain rate. A queue absorbs a burst; it cannot raise the long-run drain rate.`,
+    });
+  }
+
+  // ---- delivery semantics --------------------------------------------------
+  if (telemetry.redeliveries > 0 || telemetry.deadLettered > 0) {
+    const queues = telemetry.nodes.filter((node) => node.kind === "queue" && (node.redeliveries > 0 || node.deadLettered > 0));
+    const deduped = telemetry.dedupedDuplicates;
+    insights.push({
+      severity: telemetry.duplicates > 0 ? "warning" : "good",
+      title: `${count(telemetry.redeliveries)} message${telemetry.redeliveries === 1 ? " was" : "s were"} redelivered, ${count(telemetry.duplicates)} of them processed twice`,
+      detail: `At-least-once delivery makes a message visible again when the worker dies mid-job or holds it past the visibility timeout, so ${percent(telemetry.duplicateRate)} of requests did their work more than once${
+        deduped ? ` and ${count(deduped)} were deduplicated by an idempotent worker` : ""
+      }. Duplicates are the cost of never losing a job: make the work idempotent (dedup by key) and the redelivery becomes free. ${count(telemetry.deadLettered)} message${telemetry.deadLettered === 1 ? " was" : "s were"} dead-lettered after exhausting their deliveries, which is ${percent(telemetry.deadLetterRate)} of requests: a dead letter is a failure you can still inspect, not a failure you can ignore.`,
+      ...(queues.length === 1 ? { nodeId: queues[0].id } : {}),
+    });
+  }
+
+  // ---- quorum availability -------------------------------------------------
+  for (const node of telemetry.nodes) {
+    if (node.dbMode !== "quorum" || node.quorumFailures <= 0) continue;
+    const healthy = node.metric.healthyReplicas ?? node.replicas;
+    insights.push({
+      severity: "critical",
+      title: `${node.label} could not assemble a quorum for ${count(node.quorumFailures)} operations`,
+      detail: `It has ${count(node.replicas)} replicas (N) with W = ${count(node.quorumWrite)} and R = ${count(node.quorumRead)}, and ${count(healthy)} replica${healthy === 1 ? " was" : "s were"} healthy at the end of the run. An operation needs its whole quorum, so availability is lost as soon as N minus the quorum replicas are down: W = N gives you no write availability at all. R + W > N buys consistency; the slack between them buys availability.`,
+      nodeId: node.id,
+    });
+  }
+
+  // ---- lost writes ---------------------------------------------------------
+  if (telemetry.lostWrites > 0) {
+    insights.push({
+      severity: "critical",
+      title: `${count(telemetry.lostWrites)} acknowledged writes were lost on failover`,
+      detail: `A leader acknowledged them and died before its followers had them, so the clients were told the write succeeded and the data is gone. Asynchronous replication trades durability for write latency: shrink the replication lag, wait for a follower acknowledgement (synchronous replication, slower writes), or use a quorum where W > 1 so no single machine holds the only copy.`,
+    });
+  }
+
+  // ---- gray failures -------------------------------------------------------
+  for (const node of telemetry.nodes) {
+    if (node.flapCycles > 0) {
+      insights.push({
+        severity: "warning",
+        title: `${node.label} flapped between dead and alive ${count(node.flapCycles)} times`,
+        detail: `A flapping replica is worse than a dead one: whatever routes to it keeps sending a share of traffic into a machine that is healthy at the moment of the check and dead a moment later. ${
+          node.healthCheckMs > 0
+            ? `A ${count(node.healthCheckMs)} ms health check samples that cycle rather than tracking it.`
+            : "Instant health detection hides the flap from the balancer's view but not from the requests already in flight."
+        } Real systems damp this with consecutive-failure thresholds and ejection windows, so a replica that misbehaves stays out of rotation instead of rejoining every few seconds.`,
+        nodeId: node.id,
+      });
+    }
+    if (node.burstErrors > 0) {
+      insights.push({
+        severity: "critical",
+        title: `${node.label} returned ${count(node.burstErrors)} errors while still reporting healthy`,
+        detail: `Every replica stayed in rotation (${count(node.metric.healthyReplicas ?? node.replicas)} healthy) because a liveness check only asks whether the process answers, not whether it answers correctly. This is the gray failure that pages nobody: error rate moves, availability does not. Health checks have to exercise the real dependency path, and routing has to eject on error rate, not just on connection failure.`,
+        nodeId: node.id,
+      });
+    }
+  }
+
+  // ---- connection pools ----------------------------------------------------
+  for (const node of telemetry.nodes) {
+    if (node.poolSize <= 0 || (node.poolWaits <= 0 && node.poolRejections <= 0)) continue;
+    const averageWait = node.poolWaits > 0 ? node.poolWaitMs / node.poolWaits : 0;
+    insights.push({
+      severity: node.poolRejections > 0 || node.metric.utilization < 0.5 ? "critical" : "warning",
+      title: `${node.label}: ${count(node.poolWaits)} dependency calls waited for a connection pool slot`,
+      detail: `The pool holds ${count(node.poolSize)} connections per replica. Calls waited ${round(averageWait)} ms on average${
+        node.poolRejections ? ` and ${count(node.poolRejections)} were rejected as pool-exhausted` : ""
+      } while the server's own lanes ran at ${percent(node.metric.utilization)} utilization. A connection pool converts a slow dependency into a queue inside an idle server: the CPU looks fine, the requests are stuck. Size the pool against the dependency's latency (Little's law: concurrency = rate x latency) and fail fast rather than queue for ever.`,
+      nodeId: node.id,
+    });
+  }
+
+  // ---- usage cost ----------------------------------------------------------
+  if (telemetry.usageCost > 0) {
+    const share = telemetry.usageCost / (telemetry.cost || 1);
+    const dominant = [...telemetry.nodes].sort((a, b) => b.usageCost - a.usageCost)[0];
+    insights.push({
+      severity: share >= 0.5 ? "warning" : "good",
+      title: `Usage is ${percent(share)} of the ${round(telemetry.cost)} credit bill`,
+      detail: `${round(telemetry.provisionedCost)} credits are provisioned capacity you pay for whether or not traffic arrives, and ${round(telemetry.usageCost)} credits are the operations this run actually performed, extrapolated to an hour${
+        dominant && dominant.usageCost > 0 ? ` (${dominant.label} alone accounts for ${round(dominant.usageCost)})` : ""
+      }. Database operations are the expensive ones and writes are billed twice, so a cache that removes read traffic cuts the usage bill as well as the latency, while an idle replica only ever costs you provisioned credits.`,
     });
   }
 

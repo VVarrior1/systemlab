@@ -1,5 +1,7 @@
 .metric.dim{opacity:.45}
 .metric.dim:hover{opacity:.7}
+.metric-sub{display:block;margin-top:2px;font-size:9.5px;color:var(--muted)}
+.cost-usage{color:var(--muted)}
 .cost-breakdown{margin-top:8px;font-size:10px}
 .cost-breakdown summary{cursor:pointer;color:var(--muted);list-style:none}
 .cost-breakdown summary::-webkit-details-marker{display:none}

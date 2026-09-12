@@ -2,6 +2,23 @@
 .defense-stage .locked-state{width:100%}
 .defense-stage .panel-empty svg{color:#c5d3c9;margin-bottom:4px}
 
+/* Playground canvas column, dimmed while the interview-mode defense is active. */
+.lab-column.defense-dimmed{position:relative}
+.lab-column.defense-dimmed>*:not(.defense-stage){opacity:.35;filter:saturate(.6);pointer-events:none;transition:opacity .2s}
+
+.defense-interview-toggle{display:inline-flex;align-items:center;gap:6px;margin-left:auto;font-size:11px;color:var(--muted);font-weight:500;cursor:pointer}
+.defense-interview-toggle input{margin:0}
+.defense-clock{display:inline-flex;align-items:center;gap:5px;font:11px var(--mono);color:var(--green-dark);background:var(--green-soft);border-radius:5px;padding:3px 8px}
+.defense-clock.over{color:#a9663a;background:#fbf1e7}
+
+.defense-answer-tools{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.defense-speak{display:inline-flex;align-items:center;gap:6px}
+.defense-speak.active{border-color:#a9663a;color:#a9663a;background:#fbf1e7}
+.defense-dictation-note{margin:0;font-size:10px;color:var(--muted)}
+
+.defense-deductions{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.defense-deductions li{display:flex;justify-content:space-between;gap:12px;font-size:11px;color:#a9663a}
+
 .reflection-option{display:flex;align-items:center;gap:9px;text-align:left;padding:10px 13px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font-size:12px;line-height:1.5;transition:border-color .15s,background .15s}
 .reflection-option:hover:not(:disabled){border-color:var(--green)}
 .reflection-option svg{flex:none}

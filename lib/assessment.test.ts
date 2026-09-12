@@ -8,7 +8,8 @@ const result: SimulationResult = {
   engineVersion: "1.0.0", seed: 42, duration: 30, requestCount: 3000,
   completed: 3000, failed: 0, rejected: 0, p50: 30, p95: 50, p99: 60, throughput: 99,
   errorRate: 0, rejectedRate: 0, successRate: 1, staleReads: 0, staleReadRate: 0,
-  retriesIssued: 0, amplification: 1, cost: 7, costBreakdown: [], maxQueueDepth: 1,
+  retriesIssued: 0, amplification: 1, cost: 7, provisionedCost: 7, usageCost: 0, costBreakdown: [], maxQueueDepth: 1,
+  duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
   nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
 };
 const criterion = (metric: Objective["metric"], operator: Objective["operator"], target: number): Objective => ({ id: metric, label: metric, metric, operator, target });
@@ -182,6 +183,15 @@ describe("objectivePasses covers every ObjectiveMetric", () => {
     expect(objectivePasses({ ...result, staleReadRate: 0.4 }, { id: "st", label: "st", metric: "staleReadRate", operator: "lte", target: 0.5 })).toBe(true);
     expect(objectivePasses({ ...result, staleReadRate: 0.6 }, { id: "st", label: "st", metric: "staleReadRate", operator: "lte", target: 0.5 })).toBe(false);
   });
+
+  it("reads duplicateRate, deadLetterRate and lostWrites straight from the result (v2.1 metrics)", () => {
+    expect(objectivePasses({ ...result, duplicateRate: 0.02 }, criterion("duplicateRate", "lte", 0.05))).toBe(true);
+    expect(objectivePasses({ ...result, duplicateRate: 0.2 }, criterion("duplicateRate", "lte", 0.05))).toBe(false);
+    expect(objectivePasses({ ...result, deadLetterRate: 0.01 }, criterion("deadLetterRate", "lte", 0.01))).toBe(true);
+    expect(objectivePasses({ ...result, deadLetterRate: 0.02 }, criterion("deadLetterRate", "lte", 0.01))).toBe(false);
+    expect(objectivePasses({ ...result, lostWrites: 2 }, criterion("lostWrites", "lte", 2))).toBe(true);
+    expect(objectivePasses({ ...result, lostWrites: 3 }, criterion("lostWrites", "lte", 2))).toBe(false);
+  });
 });
 
 describe("validateMissionArchitecture on new lesson kinds", () => {
@@ -197,6 +207,12 @@ describe("validateMissionArchitecture on new lesson kinds", () => {
   it("returns null unconditionally for a written lesson, regardless of the submitted architecture", () => {
     expect(validateMissionArchitecture(writtenLesson, { nodes: [], edges: [] })).toBeNull();
     expect(validateMissionArchitecture(writtenLesson, lessons[0].architecture)).toBeNull();
+  });
+
+  it("returns null unconditionally for a blank-canvas brief, regardless of the submitted architecture", () => {
+    const blankCanvasLesson: Lesson = { ...lessons[0], blankCanvas: true };
+    expect(validateMissionArchitecture(blankCanvasLesson, { nodes: [], edges: [] })).toBeNull();
+    expect(validateMissionArchitecture(blankCanvasLesson, lessons[0].architecture)).toBeNull();
   });
 
   it("treats cdn and rate-limiter as valid path components, not bypasses of the database rule", () => {

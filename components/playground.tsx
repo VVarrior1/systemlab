@@ -23,13 +23,16 @@ import { DefenseStage } from "./defense-stage";
 import { ClarificationStage } from "./clarification-stage";
 
 const sandboxKinds: NodeKind[] = ["server", "load-balancer", "database", "cache", "queue", "cdn", "rate-limiter"];
-const failureKinds: FailureEvent["kind"][] = ["server", "database", "cache-flush", "slow-database", "region"];
+const failureKinds: FailureEvent["kind"][] = ["server", "database", "cache-flush", "slow-database", "slow-server", "region", "flapping", "error-burst"];
 const failureKindLabels: Record<FailureEvent["kind"], string> = {
   server: "Server replica dies",
   database: "Database replica dies",
   "cache-flush": "Cache flushed (cold start)",
   "slow-database": "Database slows down",
+  "slow-server": "Server slows down",
   region: "Region outage",
+  flapping: "Replica flaps (dead/alive)",
+  "error-burst": "Replica error burst",
 };
 
 /** The failure events a workload actually runs, including the legacy single-failure shorthand. */
@@ -85,6 +88,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
   const [remixed, setRemixed] = useState<{ lesson: Lesson; factor: number } | null>(null);
   const [remixPreparing, setRemixPreparing] = useState(false);
   const [remixCount, setRemixCount] = useState(0);
+  const [defenseActive, setDefenseActive] = useState(false);
   const taskRef = useRef(0);
   const workers = useRef(new Set<Worker>());
   const pendingDraft = useRef<{ key: string; architecture: Architecture; workload: Workload } | null>(null);
@@ -158,7 +162,8 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
 
   /** Runs the generated alternatives one at a time on the lesson's own seed; a failure becomes a row, not a crash. */
   const runAlternatives = useCallback(async (task: number, snapshot: Architecture, learner: SimulationResult, mission: Lesson) => {
-    const variants = generateAlternatives(snapshot, mission, learner);
+    // Blank-canvas briefs never show the hidden reference row: generate alternatives without the lesson.
+    const variants = mission.blankCanvas ? generateAlternatives(snapshot, undefined, learner) : generateAlternatives(snapshot, mission, learner);
     setAlternatives([]);
     if (variants.length === 0) return;
     setAlternativesLoading(true);
@@ -297,7 +302,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
     }
   };
 
-  const completeLesson = (outcome: { defenseScore: number; defenseMode: "graded" | "self" }) => {
+  const completeLesson = (outcome: { defenseScore: number; defenseMode: "graded" | "self"; overtimeSeconds?: number; followUpMode?: "dynamic" | "static" }) => {
     if (!lesson) return;
     const existing = readProgress().find((item) => item.lessonId === lesson.id);
     const results = validation?.results ?? [];
@@ -313,6 +318,8 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
       defenseMode: outcome.defenseMode,
       remixes: (existing?.remixes ?? 0) + (remixed ? 1 : 0),
       ...(estimationOutcomes ? { estimationScore: meanEstimationScore(estimationOutcomes) } : {}),
+      ...(outcome.overtimeSeconds !== undefined ? { overtimeSeconds: outcome.overtimeSeconds } : {}),
+      ...(outcome.followUpMode !== undefined ? { followUpMode: outcome.followUpMode } : {}),
     };
     const status = saveProgress(record);
     if (!status.ok) { setError(status.error); return; }
@@ -352,7 +359,9 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
     lesson={activeLesson}
     objectiveChecks={objectiveChecks}
     status={{ text: statusText, warning: !!missionIssue }}
-    assessmentSummary={`Assessment: ${activeLesson.workload.requestRate} req/s, ${activeLesson.workload.pattern} traffic, ${Math.round(activeLesson.workload.readRatio * 100)}% reads, ${activeLesson.workload.duration}s, ${failureSummary(activeLesson.workload)}. Three seeds must pass.`}
+    assessmentSummary={activeLesson.blankCanvas
+      ? "Blank canvas: build any architecture that meets the targets."
+      : `Assessment: ${activeLesson.workload.requestRate} req/s, ${activeLesson.workload.pattern} traffic, ${Math.round(activeLesson.workload.readRatio * 100)}% reads, ${activeLesson.workload.duration}s, ${failureSummary(activeLesson.workload)}. Three seeds must pass.`}
     hintCount={hintCount}
     onRevealHint={() => setHintCount(Math.min(activeLesson.hints.length, hintCount + 1))}
     estimation={{
@@ -395,6 +404,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
       <label className="field-label">Key space <span>distinct keys</span><input type="number" aria-label="Key space" min="1" max={LIMITS.keySpace} step="100" disabled={trafficDisabled} value={workload.keySpace ?? 10000} onChange={(e) => setWorkload({ keySpace: clamp(Math.round(Number(e.target.value)), 1, LIMITS.keySpace) })} /></label>
       <label className="field-label">Key skew <span>{(workload.keySkew ?? 0.6).toFixed(2)}</span><input type="range" aria-label="Key skew" min="0" max="95" disabled={trafficDisabled} value={Math.round((workload.keySkew ?? 0.6) * 100)} onChange={(e) => setWorkload({ keySkew: Number(e.target.value) / 100 })} /></label>
       <label className="field-label">Cross-region latency <span>ms</span><input type="number" aria-label="Cross-region latency" min="0" max="5000" step="10" disabled={trafficDisabled} value={workload.crossRegionLatencyMs ?? 80} onChange={(e) => setWorkload({ crossRegionLatencyMs: clamp(Math.round(Number(e.target.value)), 0, 5000) })} /></label>
+      <label className="field-label">Request deadline <span>ms, end-to-end</span><input type="number" aria-label="Request deadline" min="0" max="60000" step="50" disabled={trafficDisabled} value={workload.deadlineMs ?? 5000} onChange={(e) => setWorkload({ deadlineMs: clamp(Math.round(Number(e.target.value)), 0, 60000) })} /></label>
       <div className="failure-editor">
         <div className="requirements-heading"><span>FAILURE EVENTS</span><span>{failures.length}/{LIMITS.failureEvents}</span></div>
         {failures.length === 0 && <p className="field-note">No failures injected. Add one to see how the design behaves while something is broken.</p>}
@@ -402,8 +412,10 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
           <label className="field-label">Event<select aria-label={`Failure ${index + 1} kind`} value={row.kind} disabled={trafficDisabled} onChange={(e) => patchFailure(index, { kind: e.target.value as FailureEvent["kind"] })}>{failureKinds.map((kind) => <option key={kind} value={kind}>{failureKindLabels[kind]}</option>)}</select></label>
           <label className="field-label">At <span>% of run</span><input type="number" aria-label={`Failure ${index + 1} start`} min="0" max="100" disabled={trafficDisabled} value={Math.round(row.at * 100)} onChange={(e) => patchFailure(index, { at: clamp(Number(e.target.value), 0, 100) / 100 })} /></label>
           <label className="field-label">Recovery <span>s, 0 = never</span><input type="number" aria-label={`Failure ${index + 1} duration`} min="0" max="600" disabled={trafficDisabled} value={row.duration ?? 0} onChange={(e) => patchFailure(index, { duration: clamp(Math.round(Number(e.target.value)), 0, 600) })} /></label>
-          {row.kind === "slow-database" && <label className="field-label">Slowdown <span>x</span><input type="number" aria-label={`Failure ${index + 1} factor`} min="1" max="100" disabled={trafficDisabled} value={row.factor ?? 5} onChange={(e) => patchFailure(index, { factor: clamp(Number(e.target.value), 1, 100) })} /></label>}
+          {(row.kind === "slow-database" || row.kind === "slow-server") && <label className="field-label">Slowdown <span>x</span><input type="number" aria-label={`Failure ${index + 1} factor`} min="1" max="100" disabled={trafficDisabled} value={row.factor ?? 5} onChange={(e) => patchFailure(index, { factor: clamp(Number(e.target.value), 1, 100) })} /></label>}
           {row.kind === "region" && <label className="field-label">Region<input aria-label={`Failure ${index + 1} region`} maxLength={24} disabled={trafficDisabled} value={row.region ?? ""} placeholder="primary" onChange={(e) => patchFailure(index, { region: e.target.value.trim() || undefined })} /></label>}
+          {row.kind === "flapping" && <label className="field-label">Flap interval <span>ms</span><input type="number" aria-label={`Failure ${index + 1} interval`} min="50" max="60000" step="50" disabled={trafficDisabled} value={row.intervalMs ?? 1000} onChange={(e) => patchFailure(index, { intervalMs: clamp(Math.round(Number(e.target.value)), 50, 60000) })} /></label>}
+          {row.kind === "error-burst" && <label className="field-label">Error ratio <span>{Math.round((row.ratio ?? 0.3) * 100)}%</span><input type="range" aria-label={`Failure ${index + 1} error ratio`} min="0" max="100" disabled={trafficDisabled} value={Math.round((row.ratio ?? 0.3) * 100)} onChange={(e) => patchFailure(index, { ratio: Number(e.target.value) / 100 })} /></label>}
           <button className="icon-button" aria-label={`Remove failure event ${index + 1}`} disabled={trafficDisabled} onClick={() => setFailures(failures.filter((_, i) => i !== index))}><Trash2 size={14} /></button>
         </div>)}
         <button className="button small" disabled={trafficDisabled || failures.length >= LIMITS.failureEvents} onClick={() => setFailures([...failures, { kind: "server", at: 0.5, duration: 0 }])}><Plus size={14} />Add failure event</button>
@@ -428,13 +440,13 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
 
     {isWritten && lesson ? <div className="workspace-grid written-grid">
       {missionPanel}
-      <div className="lab-column written-column">
-        <DefenseStage lesson={lesson} nextLesson={nextLesson ? { id: nextLesson.id, title: nextLesson.title } : undefined} enabled completed={completed} onComplete={completeLesson} />
+      <div className={`lab-column written-column ${defenseActive ? "defense-dimmed" : ""}`}>
+        <DefenseStage lesson={lesson} nextLesson={nextLesson ? { id: nextLesson.id, title: nextLesson.title } : undefined} enabled completed={completed} hintCount={hintCount} onComplete={completeLesson} onActive={setDefenseActive} />
       </div>
     </div> : <>
       <div className={`workspace-grid ${!lesson ? "sandbox-grid" : ""}`}>
         {missionPanel}
-        <div className="lab-column">
+        <div className={`lab-column ${defenseActive ? "defense-dimmed" : ""}`}>
           {trafficControls}
           {isBrief && lesson && clarifications.length > 0 && <div className="brief-stage"><ClarificationStage lesson={lesson} asked={asked} onAsk={askClarification} revealed={revealed} /></div>}
           {ready ? <ArchitectureCanvas result={stale ? null : result} running={running} allowedKinds={activeLesson?.allowedKinds ?? sandboxKinds} onReset={() => setResetOpen(true)} /> : <div className="canvas-loading"><LoaderCircle size={23} className="spin" />Opening architecture...</div>}
@@ -451,7 +463,9 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
         nextLesson={nextLesson ? { id: nextLesson.id, title: nextLesson.title } : undefined}
         enabled={valid || completed}
         completed={completed}
+        hintCount={hintCount}
         onComplete={completeLesson}
+        onActive={setDefenseActive}
         remixActive={!!remixed}
       />}
     </>}

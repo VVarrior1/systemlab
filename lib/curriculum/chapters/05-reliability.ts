@@ -206,7 +206,7 @@ export const chapter: ChapterFile = {
         "Work out the number of writes that land inside the promotion window: that is the write share of the traffic multiplied by the length of the window, and it is the error budget you are choosing to spend.",
         "Then size the follower pool for the state after promotion, when one replica is dead and one of the survivors has become the leader, and shorten the promotion window itself.",
       ],
-      objectives: [...healthy(300, 160), budget(70)],
+      objectives: [...healthy(300, 160), budget(79)],
       architecture: protectStarter,
       reference: protectReference,
       workload: workload({ requestRate: 320, readRatio: 0.85, duration: 30, seed: 4202, failures: [{ kind: "database", at: 0.4 }] }),

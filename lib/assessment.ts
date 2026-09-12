@@ -26,6 +26,9 @@ export function objectivePasses(result: SimulationResult, objective: Lesson["obj
 
 export function validateMissionArchitecture(lesson: Lesson, architecture: Architecture): string | null {
   if (lesson.kind === "written") return null;
+  // Blank-canvas briefs start from a traffic-only graph and are graded only on objectives and
+  // runnability (enforced by validateSimulation at run time), never on topology shape.
+  if (lesson.blankCanvas) return null;
   const signature = (node: Architecture["nodes"][number]) => `${node.kind}:${node.role ?? "application"}`;
   const required = new Map<string, number>();
   for (const node of lesson.architecture.nodes) required.set(signature(node), (required.get(signature(node)) ?? 0) + 1);

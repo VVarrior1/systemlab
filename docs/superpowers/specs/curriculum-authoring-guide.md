@@ -90,14 +90,23 @@ Existing v1 ids keep their ids. Every lesson below is `sim` unless marked WRITTE
 - `active-active`: two regional app stacks with geo routing and a leader DB in one region; learner must place caches/edges to keep reads local; objectives p95, cost.
 - `region-outage`: `failures: [{ kind: "region", region: "us-east", at: 0.5, duration: 10 }]`; surviving region must have capacity; objective errorRate ≤ 5%, p95.
 
-### 10 Interview toolkit (WRITTEN, Intermediate)
+### 10 Data systems (Advanced; added in v2.1)
+- `at-least-once-delivery`: a worker replica dies mid-run; at-most-once loses jobs, at-least-once duplicates them; fix with `idempotent` workers. Objectives errorRate, duplicateRate.
+- `dead-letter-queue`: a poison job redelivered forever starves the queue; `maxDeliveries` and a deadLetterRate objective.
+- `quorum-reads-and-writes`: N=3, choose W/R; one replica dies; W=3 is unavailable, W=2/R=2 survives; staleReadRate and errorRate objectives.
+- `lost-writes-on-failover`: leader death with lag; objective lostWrites ≤ k via lower lag or a quorum.
+- `gray-failure`: an error burst on one replica that health checks miss; breaker/retry budget and least-connections.
+- `connection-pool-starvation`: slow dependency and a small pool; idle server, failing requests; timeout plus pool sizing.
+- WRITTEN `transactions-and-sagas`, WRITTEN `stream-processing-and-search`.
+
+### 11 Interview toolkit (WRITTEN, Intermediate)
 - `framing-and-requirements`: functional vs non-functional, clarifying questions that matter, SLOs, scale numbers, out of scope. Defense: frame a given prompt.
 - `numbers-everyone-should-know`: latency numbers, throughput per server, storage math; links to the gym (`/gym`). Defense: estimate a described system.
 - `api-design-and-idempotency`: REST vs RPC, pagination, versioning, idempotency keys, retries safety. Defense: design an API for a described feature.
 - `storage-engines-and-indexing`: B-tree vs LSM, indexes, read/write amplification, when to pick which store. Defense: choose a store for three workloads.
 - `observability-and-slos`: golden signals, SLIs/SLOs/error budgets, alerting on symptoms, tracing. Defense: SLOs and alerts for the launch-day system.
 
-### 11 Design briefs (BRIEF, Expert, 25-35 min)
+### 12 Design briefs (BRIEF, Expert, 25-35 min; blank canvas since v2.1)
 Each brief: an ambiguous one-paragraph prompt; 6-8 clarifications (≥ 4 relevant: read/write ratio, peak factor, latency SLO, consistency need, data retention, region mix; some irrelevant: team size, programming language, brand colours); a workload and objectives that are only sensible once the relevant answers are known; a starter with a bare stack; a reference that passes; estimation on dbLoad, bottleneckCapacity, cost; 3 follow-ups; a rubric that rewards requirement framing and tradeoff articulation.
 - `url-shortener`: read-heavy (100:1), hot links (skew), cache + read replicas; follow-up on custom aliases and analytics writes.
 - `news-feed`: fan-out on write vs on read; the sim builds the read path with cache and sharded storage; follow-ups on celebrities and ranking.

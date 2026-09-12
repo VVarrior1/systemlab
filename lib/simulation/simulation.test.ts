@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Architecture, NodeKind, SimulationResult, SystemNode, Workload } from "../types";
 import { lessons } from "../curriculum";
-import { ENGINE_VERSION, runSimulation, validateSimulation } from "./index";
+import { ENGINE_VERSION, REQUEST_DEADLINE_MS, runSimulation, validateSimulation } from "./index";
 import { lognormalMultiplier, powerLawKey, createRandom } from "./distributions";
 import { KeyedCache } from "./cache";
 
@@ -83,8 +83,8 @@ describe("deterministic simulation", () => {
     const first = runSimulation(architecture, workload);
     expect(runSimulation(architecture, workload)).toEqual(first);
     expect(architecture).toEqual(original);
-    expect(first.engineVersion).toBe("2.0.0");
-    expect(ENGINE_VERSION).toBe("2.0.0");
+    expect(first.engineVersion).toBe("2.1.0");
+    expect(ENGINE_VERSION).toBe("2.1.0");
     expect(first.requestCount).toBe(1000);
     expect(first.completed).toBe(1000);
     expect(first.failed).toBe(0);
@@ -169,7 +169,8 @@ describe("deterministic simulation", () => {
     expect(replicated.errorRate).toBeLessThan(0.01);
     expect(replicated.p95).toBeLessThan(single.p95);
     // Cost 2.0: two more server replicas at capacity 60 = 2 * (0.4 + 3 * 60/200).
-    expect(replicated.cost - single.cost).toBeCloseTo(2.6, 5);
+    // Cost 2.1 splits the bill, so the provisioned half is what replica count moves.
+    expect(replicated.provisionedCost - single.provisionedCost).toBeCloseTo(2.6, 5);
   });
 
   it("requires explicit load balancing to use additional application replicas", () => {
@@ -920,7 +921,9 @@ describe("reported metrics", () => {
     expect(result.costBreakdown.find((item) => item.nodeId === "api")!.cost).toBeCloseTo(12.8, 3);
     // Leader plus two followers: 3 x (1 + 4) x (1 + 0.15 x 2).
     expect(result.costBreakdown.find((item) => item.nodeId === "db")!.cost).toBeCloseTo(19.5, 3);
-    expect(result.costBreakdown.reduce((sum, item) => sum + item.cost, 0)).toBeCloseTo(result.cost, 3);
+    expect(result.costBreakdown.reduce((sum, item) => sum + item.cost, 0)).toBeCloseTo(result.provisionedCost, 3);
+    expect(result.costBreakdown.reduce((sum, item) => sum + item.usage!, 0)).toBeCloseTo(result.usageCost, 2);
+    expect(result.cost).toBeCloseTo(result.provisionedCost + result.usageCost, 2);
     for (const component of architecture.nodes) component.cost = 999;
     expect(runSimulation(architecture, workload).cost).toBe(result.cost);
   });
@@ -1030,6 +1033,315 @@ describe("architecture validation", () => {
     size.nodes.push(...Array.from({ length: 48 }, (_, index) => node(`n${index}`, "database")));
     expect(() => validateSimulation(size, workload)).toThrow(/at most 48 components/);
   });
+
+  it("explains what is wrong with the v2.1 settings in a learner's words", () => {
+    const quorum = basic();
+    quorum.nodes[2].dbMode = "quorum";
+    quorum.nodes[2].replicas = 3;
+    quorum.nodes[2].quorumWrite = 4;
+    expect(() => validateSimulation(quorum, workload)).toThrow(/write quorum W must be a whole number between 1 and the 3 replicas/);
+    quorum.nodes[2].quorumWrite = 2;
+    quorum.nodes[2].quorumRead = 0;
+    expect(() => validateSimulation(quorum, workload)).toThrow(/read quorum R/);
+    quorum.nodes[2].quorumRead = 2;
+    expect(() => validateSimulation(quorum, workload)).not.toThrow();
+
+    const pool = basic();
+    pool.nodes[1].poolSize = -1;
+    expect(() => validateSimulation(pool, workload)).toThrow(/connection pool must hold between 0 \(unlimited\)/);
+    pool.nodes[1].poolSize = 4;
+    pool.nodes[1].breakerFailureRatio = 0;
+    expect(() => validateSimulation(pool, workload)).toThrow(/failure ratio must be above 0%/);
+    pool.nodes[1].breakerFailureRatio = 0.5;
+    pool.nodes[1].breakerMinCalls = 0;
+    expect(() => validateSimulation(pool, workload)).toThrow(/between 1 and 10,000 calls/);
+
+    const queued = graph(
+      [node("traffic", "traffic"), node("api", "server"), node("q", "queue"), node("w", "server", { role: "worker" })],
+      [["traffic", "api"], ["api", "q"], ["q", "w"]],
+    );
+    queued.nodes[2].maxDeliveries = 0;
+    expect(() => validateSimulation(queued, workload)).toThrow(/between 1 and 10 times before dead-lettering/);
+    queued.nodes[2].maxDeliveries = 3;
+    queued.nodes[2].visibilityTimeoutMs = -1;
+    expect(() => validateSimulation(queued, workload)).toThrow(/visibility timeout/);
+
+    expect(() => validateSimulation(basic(), { ...workload, deadlineMs: 50 })).toThrow(/request deadline must be between 100 and 60,000 ms/);
+    expect(() => validateSimulation(basic(), { ...workload, failures: [{ kind: "flapping", at: 0.5, intervalMs: 10 }] })).toThrow(/every 50 to 60,000 ms/);
+    expect(() => validateSimulation(basic(), { ...workload, failures: [{ kind: "error-burst", at: 0.5, ratio: 2 }] })).toThrow(/error burst must fail/);
+    expect(() => validateSimulation(basic(), { ...workload, failures: [{ kind: "slow-server", at: 0.5, factor: 200 }] })).toThrow(/factor must be between 1 and 100/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Engine 2.1: delivery semantics
+// ---------------------------------------------------------------------------------------------
+
+describe("queue delivery semantics", () => {
+  const jobs = (queue: Partial<SystemNode>, worker: Partial<SystemNode> = {}) =>
+    graph(
+      [
+        node("traffic", "traffic"),
+        node("api", "server", { capacity: 2000, latency: 1 }),
+        node("queue", "queue", { capacity: 10000, latency: 1, ...queue }),
+        node("worker", "server", { role: "worker", capacity: 30, latency: 5, replicas: 2, ...worker }),
+        node("db", "database", { capacity: 2000, latency: 2 }),
+      ],
+      [["traffic", "api"], ["api", "queue"], ["queue", "worker"], ["worker", "db"]],
+    );
+  const atLeastOnce = { ackMode: "at-least-once" as const, visibilityTimeoutMs: 2000, maxDeliveries: 3 };
+  const flow: Workload = { ...workload, requestRate: 40, readRatio: 0, failures: [{ kind: "server", at: 0.5, target: "worker" }] };
+
+  it("loses a job at-most-once and redelivers it at-least-once, counting the reprocessing as a duplicate", () => {
+    const lost = runSimulation(jobs({}), flow);
+    const redelivered = runSimulation(jobs(atLeastOnce), flow);
+    expect(lost.failed).toBeGreaterThan(0);
+    expect(lost.duplicates).toBe(0);
+    expect(lost.deadLettered).toBe(0);
+    expect(redelivered.failed).toBe(0);
+    expect(redelivered.duplicates).toBeGreaterThan(0);
+    expect(redelivered.duplicateRate).toBeCloseTo(redelivered.duplicates / redelivered.requestCount, 6);
+    expect(redelivered.completed + redelivered.failed).toBe(redelivered.requestCount);
+    expect(titles(redelivered).some((title) => title.includes("redelivered"))).toBe(true);
+  });
+
+  it("does no duplicate work when the worker deduplicates redeliveries by key", () => {
+    const duplicating = runSimulation(jobs(atLeastOnce), flow);
+    const idempotent = runSimulation(jobs(atLeastOnce, { idempotent: true }), flow);
+    expect(duplicating.duplicates).toBeGreaterThan(0);
+    expect(idempotent.duplicates).toBe(0);
+    expect(idempotent.duplicateRate).toBe(0);
+    expect(idempotent.failed).toBe(0);
+    // The deduplicated redelivery does no downstream work, so the database sees fewer writes.
+    expect(metric(idempotent, "db").processed).toBeLessThan(metric(duplicating, "db").processed);
+  });
+
+  it("redelivers every job whose delivery outlives the visibility timeout", () => {
+    const patient = runSimulation(jobs({ ...atLeastOnce, visibilityTimeoutMs: 2000 }), { ...workload, requestRate: 40, readRatio: 0 });
+    const impatient = runSimulation(jobs({ ...atLeastOnce, visibilityTimeoutMs: 60 }), { ...workload, requestRate: 40, readRatio: 0 });
+    expect(patient.duplicates).toBe(0);
+    expect(impatient.duplicates).toBeGreaterThan(20);
+    expect(impatient.deadLettered).toBe(0);
+    expect(impatient.completed).toBe(impatient.requestCount);
+    // Every timed-out delivery is processed again, so the worker does more work than there are jobs.
+    expect(metric(impatient, "worker").processed).toBeGreaterThan(impatient.requestCount);
+    expect(metric(impatient, "worker").processed).toBeGreaterThan(metric(patient, "worker").processed);
+  });
+
+  it("dead-letters a message once it has been delivered maxDeliveries times", () => {
+    const overloaded = jobs({ ackMode: "at-least-once", visibilityTimeoutMs: 300, maxDeliveries: 2 }, { capacity: 4 });
+    const result = runSimulation(overloaded, { ...workload, requestRate: 40, readRatio: 0 });
+    expect(result.deadLettered).toBeGreaterThan(0);
+    expect(result.deadLetterRate).toBeCloseTo(result.deadLettered / result.requestCount, 6);
+    expect(result.failed).toBeGreaterThanOrEqual(result.deadLettered);
+    expect(result.rejected).toBe(0);
+    expect(result.completed + result.failed).toBe(result.requestCount);
+    expect(result.events.some((event) => event.title.includes("dead-lettered a message"))).toBe(true);
+    const patient = runSimulation(jobs({ ackMode: "at-least-once", visibilityTimeoutMs: 300, maxDeliveries: 10 }, { capacity: 4 }), { ...workload, requestRate: 40, readRatio: 0 });
+    expect(patient.deadLettered).toBeLessThan(result.deadLettered);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Engine 2.1: quorum databases and lost writes
+// ---------------------------------------------------------------------------------------------
+
+describe("quorum databases", () => {
+  const quorum = (over: Partial<SystemNode>) =>
+    graph(
+      [node("traffic", "traffic"), node("api", "server", { capacity: 2000, latency: 1 }), node("db", "database", { capacity: 300, latency: 5, replicas: 3, dbMode: "quorum", ...over })],
+      [["traffic", "api"], ["api", "db"]],
+    );
+  const mixed: Workload = { ...workload, requestRate: 200, readRatio: 0.5 };
+  const oneDies: Workload = { ...mixed, failures: [{ kind: "database", at: 0.5, target: "db" }] };
+
+  it("survives one replica death at W=2 and R=2 over N=3, and loses writes at W=3", () => {
+    const majority = runSimulation(quorum({ quorumWrite: 2, quorumRead: 2 }), oneDies);
+    const everyone = runSimulation(quorum({ quorumWrite: 3, quorumRead: 1 }), oneDies);
+    expect(metric(majority, "db").healthyReplicas).toBe(2);
+    expect(majority.errorRate).toBeLessThan(0.01);
+    expect(majority.successRate).toBeGreaterThan(0.99);
+    expect(everyone.errorRate).toBeGreaterThan(0.15);
+    expect(titles(everyone).some((title) => title.includes("could not assemble a quorum"))).toBe(true);
+    expect(titles(majority).some((title) => title.includes("could not assemble a quorum"))).toBe(false);
+    // A quorum operation occupies W lanes, so it costs more lane time than a single-replica write.
+    const single = runSimulation(quorum({ quorumWrite: 1, quorumRead: 1 }), mixed);
+    expect(metric(runSimulation(quorum({ quorumWrite: 2, quorumRead: 2 }), mixed), "db").utilization).toBeGreaterThan(metric(single, "db").utilization);
+  });
+
+  it("never reads stale data when R + W > N, and does when R + W <= N", () => {
+    const lagging: Workload = { ...workload, requestRate: 200, readRatio: 0.8, keySpace: 50 };
+    const consistent = runSimulation(quorum({ quorumWrite: 2, quorumRead: 2, replicationLagMs: 300 }), lagging);
+    const fast = runSimulation(quorum({ quorumWrite: 1, quorumRead: 1, replicationLagMs: 300 }), lagging);
+    expect(consistent.staleReads).toBe(0);
+    expect(consistent.staleReadRate).toBe(0);
+    expect(fast.staleReads).toBeGreaterThan(0);
+    expect(fast.staleReadRate).toBeGreaterThan(0.05);
+    expect(fast.p95).toBeLessThan(consistent.p95);
+  });
+
+  it("counts the writes a dying leader acknowledged inside the replication lag as lost", () => {
+    const leader = (over: Partial<SystemNode> = {}) =>
+      graph(
+        [node("traffic", "traffic"), node("api", "server", { capacity: 2000, latency: 1 }), node("db", "database", { capacity: 400, latency: 5, replicas: 3, dbMode: "leader-follower", replicationLagMs: 300, ...over })],
+        [["traffic", "api"], ["api", "db"]],
+      );
+    const failure: Workload = { ...workload, requestRate: 200, readRatio: 0.5, failures: [{ kind: "database", at: 0.5, target: "db" }] };
+    const lossy = runSimulation(leader(), failure);
+    const tight = runSimulation(leader({ replicationLagMs: 0 }), failure);
+    expect(lossy.lostWrites).toBeGreaterThan(0);
+    expect(tight.lostWrites).toBe(0);
+    expect(runSimulation(leader(), { ...workload, requestRate: 200, readRatio: 0.5 }).lostWrites).toBe(0);
+    // The clients were told the write succeeded: those requests stay successful.
+    expect(lossy.completed + lossy.failed).toBe(lossy.requestCount);
+    expect(lossy.completed).toBeGreaterThan(lossy.requestCount * 0.8);
+    expect(lossy.events.some((event) => event.title.includes("acknowledged write"))).toBe(true);
+    expect(titles(lossy).some((title) => title.includes("lost on failover"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Engine 2.1: gray failures
+// ---------------------------------------------------------------------------------------------
+
+describe("gray failures", () => {
+  const stack = (over: Partial<SystemNode> = {}) =>
+    graph(
+      [node("traffic", "traffic"), node("lb", "load-balancer", { capacity: 10000, latency: 1, ...over }), node("api", "server", { capacity: 200, latency: 5, replicas: 2 }), node("db", "database", { capacity: 2000, latency: 2 })],
+      [["traffic", "lb"], ["lb", "api"], ["api", "db"]],
+    );
+  const base: Workload = { ...workload, requestRate: 200 };
+
+  it("fails requests in bursts while a replica flaps between dead and alive", () => {
+    const flapping = runSimulation(stack({ healthCheckMs: 1000 }), { ...base, failures: [{ kind: "flapping", at: 0.3, duration: 4, intervalMs: 400, target: "api" }] });
+    expect(flapping.errorRate).toBeGreaterThan(0.01);
+    const failingSeconds = flapping.samples.filter((sample) => sample.errorRate > 0);
+    expect(failingSeconds.length).toBeGreaterThanOrEqual(3);
+    // The failures are confined to the flapping window, not spread over the run.
+    expect(flapping.samples.slice(0, 3).every((sample) => sample.errorRate === 0)).toBe(true);
+    expect(flapping.samples.slice(8).every((sample) => sample.errorRate === 0)).toBe(true);
+    expect(metric(flapping, "api").healthyReplicas).toBe(2);
+    expect(titles(flapping).some((title) => title.includes("flapped between dead and alive"))).toBe(true);
+    expect(flapping.events.some((event) => event.title.includes("started flapping"))).toBe(true);
+  });
+
+  it("raises the error rate during an error burst without changing a single health check", () => {
+    const healthy = runSimulation(stack(), base);
+    const burst = runSimulation(stack(), { ...base, failures: [{ kind: "error-burst", at: 0.3, duration: 4, ratio: 0.5, target: "api" }] });
+    expect(healthy.errorRate).toBe(0);
+    expect(burst.errorRate).toBeGreaterThan(0.05);
+    expect(burst.rejected).toBe(0);
+    expect(metric(burst, "api").healthyReplicas).toBe(metric(healthy, "api").healthyReplicas);
+    expect(metric(burst, "api").healthyReplicas).toBe(2);
+    expect(metric(burst, "lb").errors).toBe(0);
+    expect(titles(burst).some((title) => title.includes("still reporting healthy"))).toBe(true);
+  });
+
+  it("multiplies a server's service time for a slow-server event, as it does for a database", () => {
+    const healthy = runSimulation(stack(), base);
+    const slow = runSimulation(stack(), { ...base, failures: [{ kind: "slow-server", at: 0.3, duration: 4, factor: 8, target: "api" }] });
+    expect(slow.p95).toBeGreaterThan(healthy.p95 * 5);
+    expect(slow.events.some((event) => event.title.includes("slowed down 8x"))).toBe(true);
+    expect(slow.events.some((event) => event.title.includes("recovered its normal speed"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Engine 2.1: connection pools, breaker tunables, deadline and usage cost
+// ---------------------------------------------------------------------------------------------
+
+describe("connection pools", () => {
+  const pooled = (poolSize: number, maxQueue = 0) =>
+    graph(
+      [node("traffic", "traffic"), node("api", "server", { capacity: 5000, latency: 1, poolSize, maxQueue }), node("db", "database", { capacity: 20, latency: 100, replicas: 8 })],
+      [["traffic", "api"], ["api", "db"]],
+    );
+  const load: Workload = { ...workload, requestRate: 60 };
+
+  it("starves an idle server when a slow dependency holds every connection", () => {
+    const unbounded = runSimulation(pooled(0), load);
+    const starved = runSimulation(pooled(4), load);
+    const bounded = runSimulation(pooled(4, 8), load);
+    expect(unbounded.poolRejections).toBe(0);
+    expect(unbounded.failed).toBe(0);
+    expect(starved.p95).toBeGreaterThan(unbounded.p95 * 5);
+    // The lane is idle the whole time: the wait is for a connection, not for CPU.
+    expect(metric(starved, "api").utilization).toBeLessThan(0.1);
+    expect(metric(bounded, "api").utilization).toBeLessThan(0.1);
+    expect(bounded.poolRejections).toBeGreaterThan(0);
+    expect(bounded.rejected).toBe(bounded.poolRejections);
+    expect(bounded.p95).toBeLessThan(starved.p95);
+    expect(titles(starved).some((title) => title.includes("connection pool slot"))).toBe(true);
+    expect(insight(bounded, "connection pool slot")!.detail).toContain("pool-exhausted");
+  });
+});
+
+describe("tunable breakers and deadlines", () => {
+  const fragile = (over: Partial<SystemNode>) =>
+    graph(
+      [node("traffic", "traffic"), node("api", "server", { capacity: 2000, latency: 1, circuitBreaker: true, timeoutMs: 200, ...over }), node("db", "database", { capacity: 400, latency: 5 })],
+      [["traffic", "api"], ["api", "db"]],
+    );
+  const dying: Workload = { ...workload, requestRate: 200, failures: [{ kind: "database", at: 0.3, target: "db" }] };
+  const opens = (result: SimulationResult) => result.events.filter((event) => event.title.includes("opened its circuit breaker")).length;
+
+  it("opens the breaker sooner with a tighter window, minimum and ratio", () => {
+    const standard = runSimulation(fragile({}), dying);
+    const sensitive = runSimulation(fragile({ breakerWindowMs: 500, breakerMinCalls: 3, breakerFailureRatio: 0.2, breakerOpenMs: 1000 }), dying);
+    const stubborn = runSimulation(fragile({ breakerMinCalls: 500, breakerFailureRatio: 0.99 }), dying);
+    expect(opens(standard)).toBeGreaterThan(0);
+    expect(opens(sensitive)).toBeGreaterThan(opens(standard));
+    expect(sensitive.errorRate).toBeLessThan(standard.errorRate);
+    expect(opens(stubborn)).toBe(0);
+    expect(stubborn.rejected).toBe(0);
+    expect(stubborn.errorRate).toBeGreaterThan(0.5);
+    expect(insight(sensitive, "Circuit breakers opened")!.detail).toContain("window");
+  });
+
+  it("times requests out at the workload deadline instead of the five-second default", () => {
+    expect(REQUEST_DEADLINE_MS).toBe(5000);
+    const slow = graph([node("traffic", "traffic"), node("api", "server", { capacity: 2000, latency: 800 })], [["traffic", "api"]]);
+    const patient = runSimulation(slow, { ...workload, requestRate: 50, duration: 5 });
+    const impatient = runSimulation(slow, { ...workload, requestRate: 50, duration: 5, deadlineMs: 400 });
+    expect(patient.failed).toBe(0);
+    expect(impatient.completed).toBe(0);
+    expect(impatient.failed).toBe(impatient.requestCount);
+    expect(titles(impatient).some((title) => title.includes("400 ms deadline"))).toBe(true);
+    expect(patient.assumptions.some((line) => line.includes("5,000 ms end-to-end deadline"))).toBe(true);
+    expect(impatient.assumptions.some((line) => line.includes("400 ms end-to-end deadline"))).toBe(true);
+  });
+});
+
+describe("usage cost", () => {
+  const shape = () =>
+    graph(
+      [node("traffic", "traffic"), node("api", "server", { capacity: 3000, latency: 1 }), node("db", "database", { capacity: 3000, latency: 2 })],
+      [["traffic", "api"], ["api", "db"]],
+    );
+
+  it("bills provisioned capacity plus the operations the run actually performed", () => {
+    const light = runSimulation(shape(), { ...workload, requestRate: 100, readRatio: 0.5 });
+    const heavy = runSimulation(shape(), { ...workload, requestRate: 400, readRatio: 0.5 });
+    expect(light.provisionedCost).toBe(heavy.provisionedCost);
+    expect(light.usageCost).toBeGreaterThan(0);
+    expect(heavy.usageCost).toBeGreaterThan(light.usageCost * 3.5);
+    expect(heavy.usageCost).toBeLessThan(light.usageCost * 4.5);
+    expect(light.cost).toBeCloseTo(light.provisionedCost + light.usageCost, 2);
+    expect(heavy.cost).toBeCloseTo(heavy.provisionedCost + heavy.usageCost, 2);
+    expect(light.cost).toBeLessThan(heavy.cost);
+    expect(light.costBreakdown.every((row) => row.usage !== undefined)).toBe(true);
+    expect(light.costBreakdown.reduce((sum, row) => sum + row.usage!, 0)).toBeCloseTo(light.usageCost, 2);
+  });
+
+  it("charges twice as much for a write as for a read and nothing for idle capacity", () => {
+    const reads = runSimulation(shape(), { ...workload, requestRate: 200, readRatio: 1 });
+    const writes = runSimulation(shape(), { ...workload, requestRate: 200, readRatio: 0 });
+    const dbUsage = (result: SimulationResult) => result.costBreakdown.find((row) => row.nodeId === "db")!.usage!;
+    expect(dbUsage(writes)).toBeCloseTo(dbUsage(reads) * 2, 2);
+    const idle = runSimulation(shape(), { ...workload, requestRate: 1, duration: 1 });
+    expect(idle.usageCost).toBeLessThan(idle.provisionedCost * 0.05);
+    expect(idle.cost).toBeGreaterThan(idle.provisionedCost);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -1042,6 +1354,8 @@ describe("curriculum smoke test", () => {
     for (const lesson of lessons) {
       for (const [name, architecture] of [["architecture", lesson.architecture], ["reference", lesson.reference]] as const) {
         if (!architecture?.nodes?.length) continue;
+        // Blank-canvas briefs start with a traffic source only; that starter is deliberately not runnable.
+        if (name === "architecture" && lesson.blankCanvas) continue;
         const result = runSimulation(architecture, lesson.workload);
         expect(result.requestCount, `${lesson.id} ${name} produced no requests`).toBeGreaterThan(0);
         expect(result.completed + result.failed, `${lesson.id} ${name} lost requests`).toBe(result.requestCount);

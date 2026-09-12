@@ -368,6 +368,109 @@ describe("v2 node and workload fields", () => {
   });
 });
 
+describe("v2.1 node fields (queues, workers, pools, breakers, quorum)", () => {
+  function baseArchitecture(nodeOverride: Partial<SystemNode> = {}) {
+    return {
+      nodes: [
+        { id: "traffic", kind: "traffic", label: "Traffic", position: { x: 0, y: 0 }, capacity: 1000, latency: 0, replicas: 1, cacheHitRate: 0, enabled: true, cost: 0 },
+        { id: "app", kind: "server", label: "Application", position: { x: 200, y: 0 }, capacity: 100, latency: 25, replicas: 1, cacheHitRate: 0, enabled: true, cost: 2, ...nodeOverride },
+      ],
+      edges: [{ id: "traffic-app", source: "traffic", target: "app" }],
+    };
+  }
+
+  it("accepts every v2.1 node field within bounds", () => {
+    const architecture = validateArchitecture(baseArchitecture({
+      ackMode: "at-least-once", visibilityTimeoutMs: 5000, maxDeliveries: 5, idempotent: true,
+      poolSize: 20, breakerWindowMs: 2000, breakerMinCalls: 30, breakerFailureRatio: 0.4, breakerOpenMs: 8000,
+      quorumWrite: 2, quorumRead: 3, dbMode: "quorum",
+    }));
+    const app = architecture.nodes[1] as SystemNode;
+    expect(app.ackMode).toBe("at-least-once");
+    expect(app.visibilityTimeoutMs).toBe(5000);
+    expect(app.maxDeliveries).toBe(5);
+    expect(app.idempotent).toBe(true);
+    expect(app.poolSize).toBe(20);
+    expect(app.breakerWindowMs).toBe(2000);
+    expect(app.breakerMinCalls).toBe(30);
+    expect(app.breakerFailureRatio).toBe(0.4);
+    expect(app.breakerOpenMs).toBe(8000);
+    expect(app.quorumWrite).toBe(2);
+    expect(app.quorumRead).toBe(3);
+    expect(app.dbMode).toBe("quorum");
+  });
+
+  it.each([
+    ["visibilityTimeoutMs", -1], ["visibilityTimeoutMs", 60001],
+    ["maxDeliveries", 0], ["maxDeliveries", 21], ["maxDeliveries", 1.5],
+    ["poolSize", -1], ["poolSize", 10001], ["poolSize", 1.5],
+    ["breakerWindowMs", 99], ["breakerWindowMs", 60001],
+    ["breakerMinCalls", 0], ["breakerMinCalls", 10001],
+    ["breakerFailureRatio", -0.01], ["breakerFailureRatio", 1.01],
+    ["breakerOpenMs", 99], ["breakerOpenMs", 600001],
+    ["quorumWrite", 0], ["quorumWrite", 17], ["quorumRead", 0], ["quorumRead", 17],
+  ])("rejects an out-of-range %s value", (field, value) => {
+    expect(() => validateArchitecture(baseArchitecture({ [field]: value } as Partial<SystemNode>))).toThrow();
+  });
+
+  it("rejects an invalid ackMode", () => {
+    expect(() => validateArchitecture(baseArchitecture({ ackMode: "exactly-once" } as unknown as Partial<SystemNode>))).toThrow();
+  });
+
+  it("rejects a non-boolean idempotent value", () => {
+    expect(() => validateArchitecture(baseArchitecture({ idempotent: "yes" as unknown as boolean }))).toThrow();
+  });
+});
+
+describe("v2.1 workload fields (gray failures, deadline)", () => {
+  function baseWorkload(overrides: Partial<Workload> = {}): Workload {
+    return { requestRate: 100, readRatio: 0.85, duration: 30, seed: 1, pattern: "steady", failure: "none", ...overrides };
+  }
+
+  it("accepts the new gray-failure kinds with intervalMs and ratio", () => {
+    const workload = validateWorkload(baseWorkload({
+      failures: [
+        { kind: "flapping", at: 0.3, intervalMs: 2000 },
+        { kind: "error-burst", at: 0.5, ratio: 0.4 },
+        { kind: "slow-server", at: 0.7, duration: 5, factor: 4 },
+      ],
+    }));
+    expect(workload.failures).toHaveLength(3);
+    expect(workload.failures?.[0]).toEqual({ kind: "flapping", at: 0.3, intervalMs: 2000 });
+    expect(workload.failures?.[1]).toEqual({ kind: "error-burst", at: 0.5, ratio: 0.4 });
+  });
+
+  it.each([
+    ["intervalMs", 49], ["intervalMs", 60001], ["ratio", -0.01], ["ratio", 1.01],
+  ])("rejects an out-of-range failure %s value", (field, value) => {
+    expect(() => validateWorkload(baseWorkload({ failures: [{ kind: "flapping", at: 0.5, [field]: value }] } as unknown as Partial<Workload>))).toThrow();
+  });
+
+  it("accepts a deadlineMs within bounds and rejects it out of bounds", () => {
+    expect(validateWorkload(baseWorkload({ deadlineMs: 3000 })).deadlineMs).toBe(3000);
+    expect(() => validateWorkload(baseWorkload({ deadlineMs: 99 }))).toThrow();
+    expect(() => validateWorkload(baseWorkload({ deadlineMs: 60001 }))).toThrow();
+  });
+});
+
+describe("v2.1 progress fields (interview overtime, follow-up mode)", () => {
+  const base: ProgressRecord = { lessonId: "first-request", completedAt: "2026-09-09T12:00:00.000Z", bestP95: 100, cost: 8, assessmentVersion: ASSESSMENT_VERSION };
+
+  it("accepts overtimeSeconds and followUpMode within bounds", () => {
+    const validated = validateProgress({ ...base, overtimeSeconds: 45, followUpMode: "dynamic" });
+    expect(validated.overtimeSeconds).toBe(45);
+    expect(validated.followUpMode).toBe("dynamic");
+  });
+
+  it.each([["overtimeSeconds", -1], ["overtimeSeconds", 100001]])("rejects an out-of-range %s value", (field, value) => {
+    expect(() => validateProgress({ ...base, [field]: value })).toThrow();
+  });
+
+  it("rejects an invalid followUpMode", () => {
+    expect(() => validateProgress({ ...base, followUpMode: "manual" })).toThrow("follow-up mode");
+  });
+});
+
 describe("v2 progress fields", () => {
   const base: ProgressRecord = { lessonId: "first-request", completedAt: "2026-09-09T12:00:00.000Z", bestP95: 100, cost: 8, assessmentVersion: ASSESSMENT_VERSION };
 

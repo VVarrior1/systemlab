@@ -6,7 +6,8 @@ const baseResult: SimulationResult = {
   engineVersion: "1.0.0", seed: 42, duration: 30, requestCount: 3000,
   completed: 3000, failed: 0, rejected: 0, p50: 30, p95: 50, p99: 60, throughput: 99,
   errorRate: 0, rejectedRate: 0, successRate: 1, staleReads: 0, staleReadRate: 0,
-  retriesIssued: 0, amplification: 1, cost: 7, costBreakdown: [], maxQueueDepth: 4,
+  retriesIssued: 0, amplification: 1, cost: 7, provisionedCost: 7, usageCost: 0, costBreakdown: [], maxQueueDepth: 4,
+  duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
   nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
 };
 

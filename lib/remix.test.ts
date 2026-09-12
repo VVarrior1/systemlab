@@ -100,8 +100,9 @@ describe("deriveRemixObjectives formulas", () => {
     const results = [123, 2026, 555].map((seed, index) => ({
       engineVersion: "2.0.0", seed, duration: 30, requestCount: 3000, completed: 3000, failed: 0, rejected: 0,
       p50: 20, p95: 40 + index * 10, p99: 70, throughput: 100, errorRate: 0, rejectedRate: 0, successRate: 1,
-      staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10 + index, costBreakdown: [],
-      maxQueueDepth: 1, nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
+      staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10 + index, provisionedCost: 10 + index, usageCost: 0, costBreakdown: [],
+      maxQueueDepth: 1, duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
+      nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
     }));
     const objectives = deriveRemixObjectives(lesson, { ...lesson.workload, requestRate: 100, pattern: "steady" }, results);
     const p95 = objectives.find((o) => o.metric === "p95")!;
@@ -118,8 +119,9 @@ describe("deriveRemixObjectives formulas", () => {
     const results = [140, 120].map((throughput, index) => ({
       engineVersion: "2.0.0", seed: index + 1, duration: 30, requestCount: 6000, completed: 5000, failed: 1000, rejected: 1000,
       p50: 20, p95: 40, p99: 70, throughput, errorRate: 0, rejectedRate: 0.16, successRate: 0.84,
-      staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, costBreakdown: [],
-      maxQueueDepth: 1, nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
+      staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, provisionedCost: 10, usageCost: 0, costBreakdown: [],
+      maxQueueDepth: 1, duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
+      nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
     }));
     // The pattern formula would ask for 0.95 x 200 = 190 req/s, which a shedding design never reaches.
     const objectives = deriveRemixObjectives(lesson, { ...lesson.workload, requestRate: 200, pattern: "steady" }, results);
@@ -131,8 +133,9 @@ describe("deriveRemixObjectives formulas", () => {
       engineVersion: "2.0.0", seed: 1, duration: 30, requestCount: 3000, completed: 3000, failed: 0, rejected: 0,
       // Measured well above the requested rate so the reference cap does not bind here.
       p50: 20, p95: 40, p99: 70, throughput: 400, errorRate: 0, rejectedRate: 0, successRate: 1,
-      staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, costBreakdown: [],
-      maxQueueDepth: 1, nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
+      staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, provisionedCost: 10, usageCost: 0, costBreakdown: [],
+      maxQueueDepth: 1, duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
+      nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
     }];
     const objectives = deriveRemixObjectives(lesson, { ...lesson.workload, requestRate: 200, pattern: "spike" }, results);
     const throughput = objectives.find((o) => o.metric === "throughput")!;
@@ -145,12 +148,39 @@ describe("deriveRemixObjectives formulas", () => {
     const results = [{
       engineVersion: "2.0.0", seed: 1, duration: 30, requestCount: 3000, completed: 3000, failed: 0, rejected: 0,
       p50: 20, p95: 40, p99: 70, throughput: 100, errorRate: 0, rejectedRate: 0, successRate: 1,
-      staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, costBreakdown: [],
-      maxQueueDepth: 20, nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
+      staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, provisionedCost: 10, usageCost: 0, costBreakdown: [],
+      maxQueueDepth: 20, duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
+      nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
     }];
     const withObjectives = deriveRemixObjectives(withQueueObjective, { ...withQueueObjective.workload }, results);
     expect(withObjectives.find((o) => o.metric === "maxQueueDepth")?.target).toBe(30);
     const withoutObjectives = deriveRemixObjectives(without, { ...without.workload }, results);
     expect(withoutObjectives.find((o) => o.metric === "maxQueueDepth")).toBeUndefined();
+  });
+
+  it("scales duplicateRate/deadLetterRate at 1.5x and lostWrites at +2 of the worst reference value (v2.1)", () => {
+    const base = lessons[0];
+    const withV21Objectives: Lesson = {
+      ...base,
+      objectives: [
+        { id: "duplicateRate", label: "dup", metric: "duplicateRate", operator: "lte", target: 0.1 },
+        { id: "deadLetterRate", label: "dl", metric: "deadLetterRate", operator: "lte", target: 0.1 },
+        { id: "lostWrites", label: "lw", metric: "lostWrites", operator: "lte", target: 5 },
+      ],
+    };
+    const results = [
+      { seed: 1, duplicateRate: 0.04, deadLetterRate: 0.02, lostWrites: 3 },
+      { seed: 2, duplicateRate: 0.08, deadLetterRate: 0.06, lostWrites: 7 },
+    ].map(({ seed, duplicateRate, deadLetterRate, lostWrites }) => ({
+      engineVersion: "2.0.0", seed, duration: 30, requestCount: 3000, completed: 3000, failed: 0, rejected: 0,
+      p50: 20, p95: 40, p99: 70, throughput: 100, errorRate: 0, rejectedRate: 0, successRate: 1,
+      staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, provisionedCost: 10, usageCost: 0, costBreakdown: [],
+      maxQueueDepth: 1, duplicates: 0, duplicateRate, deadLettered: 0, deadLetterRate, lostWrites, poolRejections: 0,
+      nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
+    }));
+    const objectives = deriveRemixObjectives(withV21Objectives, { ...withV21Objectives.workload }, results);
+    expect(objectives.find((o) => o.metric === "duplicateRate")?.target).toBeCloseTo(0.08 * 1.5);
+    expect(objectives.find((o) => o.metric === "deadLetterRate")?.target).toBeCloseTo(0.06 * 1.5);
+    expect(objectives.find((o) => o.metric === "lostWrites")?.target).toBe(7 + 2);
   });
 });

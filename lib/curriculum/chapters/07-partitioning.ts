@@ -70,7 +70,7 @@ export const chapter: ChapterFile = {
         "Size the fleet from the write rate: divide the peak arrival rate by the throughput you are willing to run one storage unit at, and keep a healthy multiple in reserve. Check the result against the cost objective before you build it.",
         "Switch the database to a partitioned mode and pick a key strategy that spreads a high-cardinality identifier evenly rather than by ordered ranges.",
       ],
-      objectives: [...healthy(1140, 120), budget(105)],
+      objectives: [...healthy(1140, 120), budget(135)],
       architecture: shardStarter,
       reference: shardReference,
       workload: workload({ requestRate: 1200, readRatio: 0.2, duration: 30, seed: 701, keySpace: 10000, keySkew: 0.3 }),

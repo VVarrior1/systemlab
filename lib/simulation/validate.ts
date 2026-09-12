@@ -4,7 +4,7 @@ import { normalizeNode, normalizeWorkload } from "../templates";
 const kinds: NodeKind[] = ["traffic", "server", "load-balancer", "database", "cache", "queue", "cdn", "rate-limiter"];
 const patterns = ["steady", "spike", "ramp", "flash"];
 const legacyFailures = ["none", "server", "database"];
-const failureKinds = ["server", "database", "cache-flush", "slow-database", "region"];
+const failureKinds = ["server", "database", "cache-flush", "slow-database", "slow-server", "region", "flapping", "error-burst"];
 
 /** What traffic, a CDN or a rate limiter may hand a request to. */
 const entryTargets: NodeKind[] = ["server", "load-balancer", "cdn", "rate-limiter"];
@@ -17,6 +17,8 @@ export const LIMITS = {
   requestRate: 3000,
   duration: 60,
   failureEvents: 6,
+  poolSize: 1000,
+  maxDeliveries: 10,
   keySpace: 100000,
   shards: 16,
   replicas: 16,
@@ -70,8 +72,25 @@ export function validateSimulation(architecture: Architecture, workload: Workloa
       throw new Error(`${node.label}: the health-check interval must be between 0 and 60,000 ms.`);
     }
     if (!["low", "medium", "high"].includes(settings.variance)) throw new Error(`${node.label}: choose a supported service-time variance.`);
+    if (node.kind === "server") {
+      if (!Number.isInteger(settings.poolSize) || settings.poolSize < 0 || settings.poolSize > LIMITS.poolSize) {
+        throw new Error(`${node.label}: the connection pool must hold between 0 (unlimited) and ${LIMITS.poolSize.toLocaleString("en-US")} concurrent dependency calls.`);
+      }
+      if (!Number.isFinite(settings.breakerWindowMs) || settings.breakerWindowMs < 100 || settings.breakerWindowMs > 60000) {
+        throw new Error(`${node.label}: the circuit-breaker window must be between 100 and 60,000 ms.`);
+      }
+      if (!Number.isInteger(settings.breakerMinCalls) || settings.breakerMinCalls < 1 || settings.breakerMinCalls > 10000) {
+        throw new Error(`${node.label}: the circuit breaker needs between 1 and 10,000 calls in its window before it may open.`);
+      }
+      if (!Number.isFinite(settings.breakerFailureRatio) || settings.breakerFailureRatio <= 0 || settings.breakerFailureRatio > 1) {
+        throw new Error(`${node.label}: the circuit-breaker failure ratio must be above 0% and at most 100%.`);
+      }
+      if (!Number.isFinite(settings.breakerOpenMs) || settings.breakerOpenMs < 0 || settings.breakerOpenMs > 60000) {
+        throw new Error(`${node.label}: the circuit breaker may stay open between 0 and 60,000 ms.`);
+      }
+    }
     if (node.kind === "database") {
-      if (!["single", "leader-follower", "sharded"].includes(settings.dbMode)) throw new Error(`${node.label}: choose a supported database mode.`);
+      if (!["single", "leader-follower", "sharded", "quorum"].includes(settings.dbMode)) throw new Error(`${node.label}: choose a supported database mode.`);
       if (!Number.isInteger(settings.shards) || settings.shards < 1 || settings.shards > LIMITS.shards) {
         throw new Error(`${node.label}: use between 1 and ${LIMITS.shards} shards.`);
       }
@@ -86,6 +105,13 @@ export function validateSimulation(architecture: Architecture, workload: Workloa
       if (settings.dbMode === "sharded" && settings.shards * node.replicas > 64) {
         throw new Error(`${node.label}: shards times replicas must stay at or below 64 lanes.`);
       }
+      if (settings.dbMode === "quorum") {
+        for (const [name, value] of [["write quorum W", settings.quorumWrite], ["read quorum R", settings.quorumRead]] as const) {
+          if (!Number.isInteger(value) || value < 1 || value > node.replicas) {
+            throw new Error(`${node.label}: the ${name} must be a whole number between 1 and the ${node.replicas} replica${node.replicas === 1 ? "" : "s"} (N).`);
+          }
+        }
+      }
     }
     if (node.kind === "cache") {
       if (!["probabilistic", "keyed"].includes(settings.cacheModel)) throw new Error(`${node.label}: choose a probabilistic or keyed cache model.`);
@@ -97,6 +123,17 @@ export function validateSimulation(architecture: Architecture, workload: Workloa
       }
       if (!Number.isFinite(settings.warmupSeconds) || settings.warmupSeconds < 0 || settings.warmupSeconds > 60) {
         throw new Error(`${node.label}: the warm-up must be between 0 and 60 seconds.`);
+      }
+    }
+    if (node.kind === "queue") {
+      if (!["at-most-once", "at-least-once"].includes(settings.ackMode)) {
+        throw new Error(`${node.label}: choose at-most-once or at-least-once delivery.`);
+      }
+      if (!Number.isFinite(settings.visibilityTimeoutMs) || settings.visibilityTimeoutMs < 0 || settings.visibilityTimeoutMs > 60000) {
+        throw new Error(`${node.label}: the visibility timeout must be between 0 (never redeliver on time) and 60,000 ms.`);
+      }
+      if (!Number.isInteger(settings.maxDeliveries) || settings.maxDeliveries < 1 || settings.maxDeliveries > LIMITS.maxDeliveries) {
+        throw new Error(`${node.label}: deliver a message between 1 and ${LIMITS.maxDeliveries} times before dead-lettering it.`);
       }
     }
     if (node.kind === "rate-limiter") {
@@ -209,6 +246,9 @@ export function validateSimulation(architecture: Architecture, workload: Workloa
   if (!Number.isFinite(settings.crossRegionLatencyMs) || settings.crossRegionLatencyMs < 0 || settings.crossRegionLatencyMs > 5000) {
     throw new Error("Cross-region latency must be between 0 and 5,000 ms.");
   }
+  if (!Number.isFinite(settings.deadlineMs) || settings.deadlineMs < 100 || settings.deadlineMs > 60000) {
+    throw new Error("The request deadline must be between 100 and 60,000 ms.");
+  }
   if (!Array.isArray(settings.regions) || !settings.regions.length) throw new Error("Give the traffic at least one origin region.");
   if (settings.regions.some((region) => !region.name || !Number.isFinite(region.share) || region.share <= 0)) {
     throw new Error("Every traffic region needs a name and a share above zero.");
@@ -225,7 +265,13 @@ export function validateSimulation(architecture: Architecture, workload: Workloa
       throw new Error(`A failure may last between 0 and ${LIMITS.duration} seconds.`);
     }
     if (failure.factor !== undefined && (!Number.isFinite(failure.factor) || failure.factor < 1 || failure.factor > 100)) {
-      throw new Error("A slow-database factor must be between 1 and 100.");
+      throw new Error("A slow-database or slow-server factor must be between 1 and 100.");
+    }
+    if (failure.intervalMs !== undefined && (!Number.isFinite(failure.intervalMs) || failure.intervalMs < 50 || failure.intervalMs > 60000)) {
+      throw new Error("A flapping replica must change state every 50 to 60,000 ms.");
+    }
+    if (failure.ratio !== undefined && (!Number.isFinite(failure.ratio) || failure.ratio <= 0 || failure.ratio > 1)) {
+      throw new Error("An error burst must fail between 0% (exclusive) and 100% of the replica's requests.");
     }
     if (failure.target !== undefined && !ids.has(failure.target)) {
       throw new Error("A failure event targets a component that is not in the design.");
