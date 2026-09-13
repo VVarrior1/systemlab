@@ -10,6 +10,8 @@ export const nodeDefaults: Record<NodeKind, Omit<SystemNode, "id" | "position">>
   queue: { kind: "queue", label: "Message queue", capacity: 10000, latency: 1, replicas: 1, cacheHitRate: 0, enabled: true, cost: 0 },
   cdn: { kind: "cdn", label: "CDN edge", capacity: 5000, latency: 3, replicas: 1, cacheHitRate: 0.7, enabled: true, cost: 0 },
   "rate-limiter": { kind: "rate-limiter", label: "Rate limiter", capacity: 5000, latency: 1, replicas: 1, cacheHitRate: 0, enabled: true, cost: 0, limit: 500, burst: 500 },
+  "object-store": { kind: "object-store", label: "Object store", capacity: 3000, latency: 40, replicas: 1, cacheHitRate: 0, enabled: true, cost: 0, storedGb: 100 },
+  stream: { kind: "stream", label: "Event stream", capacity: 20000, latency: 2, replicas: 1, cacheHitRate: 0, enabled: true, cost: 0, partitions: 6, consumerGroups: 1, retentionSeconds: 86400 },
 };
 for (const kind of Object.keys(nodeDefaults) as NodeKind[]) nodeDefaults[kind].cost = componentCost(nodeDefaults[kind]);
 
@@ -48,6 +50,12 @@ export const nodeFieldDefaults = {
   breakerOpenMs: 5000,
   quorumWrite: 2,
   quorumRead: 2,
+  election: "heartbeat" as const,
+  electionMs: 2000,
+  storedGb: 100,
+  partitions: 6,
+  consumerGroups: 1,
+  retentionSeconds: 86400,
 };
 
 export const workloadFieldDefaults = {
@@ -55,6 +63,8 @@ export const workloadFieldDefaults = {
   keySkew: 0.6,
   crossRegionLatencyMs: 80,
   deadlineMs: 5000,
+  payloadKb: 512,
+  objectShare: 0,
 };
 
 /** Fills every optional field so the engine and the inspector never branch on undefined. */
@@ -87,6 +97,8 @@ export const componentCatalog: { kind: NodeKind; name: string; description: stri
   { kind: "queue", name: "Queue", description: "Buffers jobs for worker replicas; can be bounded to shed overflow." },
   { kind: "cdn", name: "CDN edge", description: "Serves cacheable reads at the edge, in the user's region; misses go to the origin." },
   { kind: "rate-limiter", name: "Rate limiter", description: "Token bucket that rejects excess traffic fast so accepted requests stay healthy." },
+  { kind: "object-store", name: "Object store", description: "Blob storage for large payloads; billed for bytes stored and bytes served (egress)." },
+  { kind: "stream", name: "Event stream", description: "A partitioned, replayable log with consumer groups and per-partition ordering." },
 ];
 
 export function createSystemNode(kind: NodeKind, id: string, position: { x: number; y: number }): SystemNode {

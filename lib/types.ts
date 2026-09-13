@@ -1,4 +1,4 @@
-export type NodeKind = "traffic" | "server" | "load-balancer" | "database" | "cache" | "queue" | "cdn" | "rate-limiter";
+export type NodeKind = "traffic" | "server" | "load-balancer" | "database" | "cache" | "queue" | "cdn" | "rate-limiter" | "object-store" | "stream";
 export type Region = string;
 
 export interface SystemNode {
@@ -69,12 +69,22 @@ export interface SystemNode {
   // v2.1 — quorum databases
   quorumWrite?: number;
   quorumRead?: number;
+  // v2.3 — leader election
+  election?: "heartbeat" | "consensus";
+  electionMs?: number;
+  // v2.3 — object store
+  /** GB kept in the store; billed as storage. */
+  storedGb?: number;
+  // v2.3 — stream
+  partitions?: number;
+  consumerGroups?: number;
+  retentionSeconds?: number;
 }
 export interface SystemEdge { id: string; source: string; target: string }
 export interface Architecture { nodes: SystemNode[]; edges: SystemEdge[] }
 
 export interface FailureEvent {
-  kind: "server" | "database" | "cache-flush" | "slow-database" | "slow-server" | "region" | "flapping" | "error-burst";
+  kind: "server" | "database" | "cache-flush" | "slow-database" | "slow-server" | "region" | "flapping" | "error-burst" | "partition" | "slow-partition";
   /** Fraction of the run, 0..1. */
   at: number;
   /** Seconds until recovery. 0 or undefined: no recovery (server/database), 5 (slow-database), 0 (region). */
@@ -109,6 +119,9 @@ export interface Workload {
   crossRegionLatencyMs?: number;
   /** End-to-end request deadline. Default 5000. */
   deadlineMs?: number;
+  /** v2.3: payload size of object requests in KB (default 512) and the share of requests that are object reads/writes (default 0). */
+  payloadKb?: number;
+  objectShare?: number;
 }
 
 export interface NodeMetric {
@@ -171,6 +184,11 @@ export interface SimulationResult {
   deadLetterRate: number;
   lostWrites: number;
   poolRejections: number;
+  /** v2.3 */
+  conflictingWrites: number;
+  egressGb: number;
+  storageCost: number;
+  egressCost: number;
   maxQueueDepth: number;
   nodes: NodeMetric[];
   samples: MetricSample[];
@@ -180,7 +198,7 @@ export interface SimulationResult {
   assumptions: string[];
 }
 
-export type ObjectiveMetric = "p95" | "p99" | "throughput" | "errorRate" | "rejectedRate" | "successRate" | "cost" | "maxQueueDepth" | "staleReadRate" | "duplicateRate" | "deadLetterRate" | "lostWrites";
+export type ObjectiveMetric = "p95" | "p99" | "throughput" | "errorRate" | "rejectedRate" | "successRate" | "cost" | "maxQueueDepth" | "staleReadRate" | "duplicateRate" | "deadLetterRate" | "lostWrites" | "conflictingWrites" | "egressGb";
 export interface Objective {
   id: string;
   label: string;
@@ -272,4 +290,9 @@ export interface ProgressRecord {
   estimationBias?: Partial<Record<EstimationId, number>>;
   /** Seconds over the single lesson wall clock. */
   wallClockOvertime?: number;
+  /** v2.3 */
+  mockSessions?: number;
+  performanceScore?: number;
+  contradictions?: number;
+  dataModelScore?: number;
 }

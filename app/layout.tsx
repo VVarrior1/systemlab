@@ -12,6 +12,7 @@ import "@/components/defense-stage.css";
 import "@/components/tech-stage.css";
 import "@/components/clarification-stage.css";
 import "@/components/gym.css";
+import "@/components/mock-interview.css";
 
 export const metadata: Metadata = {
   title: { default: "System Lab | System Design Playground", template: "%s | System Lab" },

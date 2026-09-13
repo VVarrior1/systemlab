@@ -13,7 +13,12 @@ export const costRates: Record<Exclude<NodeKind, "traffic">, { base: number; cap
   queue: { base: 1, cap: 10000, exp: 0.4, fixed: 0.3 },
   cdn: { base: 2, cap: 5000, exp: 0.5, fixed: 0.6 },
   "rate-limiter": { base: 1, cap: 5000, exp: 0.3, fixed: 0.3 },
+  "object-store": { base: 1, cap: 3000, exp: 0.3, fixed: 0.4 },
+  stream: { base: 2, cap: 20000, exp: 0.5, fixed: 0.8 },
 };
+
+/** v2.3: storage is billed per GB kept (month-equivalent, scaled to the hour), egress per GB served. */
+export const storageRates = { storageGbMonth: 0.02, egressGb: 0.09 };
 
 /**
  * Cost 2.1: usage on top of the provisioned bill, in credits per 1,000 operations per hour.

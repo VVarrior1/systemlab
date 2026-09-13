@@ -5,6 +5,7 @@ import { readings as dataAndTraffic } from "./data-and-traffic";
 import { readings as toolkitAndBriefs } from "./toolkit-and-briefs";
 import { readings as dataSystems } from "./data-systems";
 import { readings as briefsMore } from "./briefs-more";
+import { readings as v23 } from "./v23";
 
 /** Verified deep-dive readings keyed by lesson id. Each URL was fetched and checked when curated. */
 export const readings: Record<string, Reading[]> = {
@@ -14,4 +15,5 @@ export const readings: Record<string, Reading[]> = {
   ...toolkitAndBriefs,
   ...dataSystems,
   ...briefsMore,
+  ...v23,
 };
