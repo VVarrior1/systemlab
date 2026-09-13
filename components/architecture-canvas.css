@@ -1,6 +1,8 @@
 /* architecture-canvas.tsx: v2 kinds, node card details, grouped inspector. Reuses tokens from app/globals.css. */
 .node-cdn .node-icon{background:#eef6fb;border-color:#dbe9f2;color:#5b93b1}
 .node-rate-limiter .node-icon{background:#fdf1ea;border-color:#f3ddc8;color:#c17d43}
+.node-object-store .node-icon{background:#f7f1ea;border-color:#eaded0;color:#a97c50}
+.node-stream .node-icon{background:#eaf4f6;border-color:#d8e9ec;color:#5f9aa8}
 
 .node-region-tag{position:absolute;top:9px;right:11px;font:7px var(--mono);color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:3px;padding:1px 5px;line-height:1.6}
 

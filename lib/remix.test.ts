@@ -47,6 +47,19 @@ describe("remixLesson", () => {
     }
   });
 
+  it("scales an object store's and a stream's capacity by factor, rounded to 10 (v2.3)", () => {
+    const lessonWithWiderWorld: Lesson = structuredClone(lesson);
+    lessonWithWiderWorld.reference.nodes.push(
+      { id: "store", kind: "object-store", label: "Store", position: { x: 0, y: 0 }, capacity: 3000, latency: 40, replicas: 1, cacheHitRate: 0, enabled: true, cost: 0.4, storedGb: 100 },
+      { id: "stream", kind: "stream", label: "Stream", position: { x: 0, y: 0 }, capacity: 20000, latency: 2, replicas: 1, cacheHitRate: 0, enabled: true, cost: 0.8, partitions: 6, consumerGroups: 1 },
+    );
+    const { factor, reference } = remixLesson(lessonWithWiderWorld, 5);
+    const store = reference.nodes.find((node) => node.kind === "object-store")!;
+    const stream = reference.nodes.find((node) => node.kind === "stream")!;
+    expect(store.capacity).toBe(Math.max(10, Math.round((3000 * factor) / 10) * 10));
+    expect(stream.capacity).toBe(Math.max(10, Math.round((20000 * factor) / 10) * 10));
+  });
+
   it("scales a rate limiter's limit/burst by factor, when present", () => {
     const lessonWithLimiter: Lesson = structuredClone(lesson);
     lessonWithLimiter.reference.nodes.push({
@@ -101,7 +114,7 @@ describe("deriveRemixObjectives formulas", () => {
       engineVersion: "2.0.0", seed, duration: 30, requestCount: 3000, completed: 3000, failed: 0, rejected: 0,
       p50: 20, p95: 40 + index * 10, p99: 70, throughput: 100, errorRate: 0, rejectedRate: 0, successRate: 1,
       staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10 + index, provisionedCost: 10 + index, usageCost: 0, costBreakdown: [],
-      maxQueueDepth: 1, duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
+      maxQueueDepth: 1, duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0, conflictingWrites: 0, egressGb: 0, storageCost: 0, egressCost: 0,
       nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
     }));
     const objectives = deriveRemixObjectives(lesson, { ...lesson.workload, requestRate: 100, pattern: "steady" }, results);
@@ -120,7 +133,7 @@ describe("deriveRemixObjectives formulas", () => {
       engineVersion: "2.0.0", seed: index + 1, duration: 30, requestCount: 6000, completed: 5000, failed: 1000, rejected: 1000,
       p50: 20, p95: 40, p99: 70, throughput, errorRate: 0, rejectedRate: 0.16, successRate: 0.84,
       staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, provisionedCost: 10, usageCost: 0, costBreakdown: [],
-      maxQueueDepth: 1, duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
+      maxQueueDepth: 1, duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0, conflictingWrites: 0, egressGb: 0, storageCost: 0, egressCost: 0,
       nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
     }));
     // The pattern formula would ask for 0.95 x 200 = 190 req/s, which a shedding design never reaches.
@@ -134,7 +147,7 @@ describe("deriveRemixObjectives formulas", () => {
       // Measured well above the requested rate so the reference cap does not bind here.
       p50: 20, p95: 40, p99: 70, throughput: 400, errorRate: 0, rejectedRate: 0, successRate: 1,
       staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, provisionedCost: 10, usageCost: 0, costBreakdown: [],
-      maxQueueDepth: 1, duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
+      maxQueueDepth: 1, duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0, conflictingWrites: 0, egressGb: 0, storageCost: 0, egressCost: 0,
       nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
     }];
     const objectives = deriveRemixObjectives(lesson, { ...lesson.workload, requestRate: 200, pattern: "spike" }, results);
@@ -149,7 +162,7 @@ describe("deriveRemixObjectives formulas", () => {
       engineVersion: "2.0.0", seed: 1, duration: 30, requestCount: 3000, completed: 3000, failed: 0, rejected: 0,
       p50: 20, p95: 40, p99: 70, throughput: 100, errorRate: 0, rejectedRate: 0, successRate: 1,
       staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, provisionedCost: 10, usageCost: 0, costBreakdown: [],
-      maxQueueDepth: 20, duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
+      maxQueueDepth: 20, duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0, conflictingWrites: 0, egressGb: 0, storageCost: 0, egressCost: 0,
       nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
     }];
     const withObjectives = deriveRemixObjectives(withQueueObjective, { ...withQueueObjective.workload }, results);
@@ -175,12 +188,37 @@ describe("deriveRemixObjectives formulas", () => {
       engineVersion: "2.0.0", seed, duration: 30, requestCount: 3000, completed: 3000, failed: 0, rejected: 0,
       p50: 20, p95: 40, p99: 70, throughput: 100, errorRate: 0, rejectedRate: 0, successRate: 1,
       staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, provisionedCost: 10, usageCost: 0, costBreakdown: [],
-      maxQueueDepth: 1, duplicates: 0, duplicateRate, deadLettered: 0, deadLetterRate, lostWrites, poolRejections: 0,
+      maxQueueDepth: 1, duplicates: 0, duplicateRate, deadLettered: 0, deadLetterRate, lostWrites, poolRejections: 0, conflictingWrites: 0, egressGb: 0, storageCost: 0, egressCost: 0,
       nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
     }));
     const objectives = deriveRemixObjectives(withV21Objectives, { ...withV21Objectives.workload }, results);
     expect(objectives.find((o) => o.metric === "duplicateRate")?.target).toBeCloseTo(0.08 * 1.5);
     expect(objectives.find((o) => o.metric === "deadLetterRate")?.target).toBeCloseTo(0.06 * 1.5);
     expect(objectives.find((o) => o.metric === "lostWrites")?.target).toBe(7 + 2);
+  });
+
+  it("targets conflictingWrites at the worst reference value + 1 and egressGb at 1.3x the worst, only when the lesson uses them (v2.3)", () => {
+    const base = lessons[0];
+    const withV23Objectives: Lesson = {
+      ...base,
+      objectives: [
+        { id: "conflictingWrites", label: "cw", metric: "conflictingWrites", operator: "lte", target: 0 },
+        { id: "egressGb", label: "eg", metric: "egressGb", operator: "lte", target: 10 },
+      ],
+    };
+    const results = [
+      { seed: 1, conflictingWrites: 1, egressGb: 4 },
+      { seed: 2, conflictingWrites: 3, egressGb: 10 },
+    ].map(({ seed, conflictingWrites, egressGb }) => ({
+      engineVersion: "2.0.0", seed, duration: 30, requestCount: 3000, completed: 3000, failed: 0, rejected: 0,
+      p50: 20, p95: 40, p99: 70, throughput: 100, errorRate: 0, rejectedRate: 0, successRate: 1,
+      staleReads: 0, staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, provisionedCost: 10, usageCost: 0, costBreakdown: [],
+      maxQueueDepth: 1, duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
+      conflictingWrites, egressGb, storageCost: 0, egressCost: 0,
+      nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
+    }));
+    const objectives = deriveRemixObjectives(withV23Objectives, { ...withV23Objectives.workload }, results);
+    expect(objectives.find((o) => o.metric === "conflictingWrites")?.target).toBe(3 + 1);
+    expect(objectives.find((o) => o.metric === "egressGb")?.target).toBeCloseTo(10 * 1.3);
   });
 });

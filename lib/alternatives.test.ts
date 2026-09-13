@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { compareAlternative, generateAlternatives } from "./alternatives";
 import { runSimulation, validateSimulation } from "./simulation";
 import { lessons } from "./curriculum";
+import { createSystemNode } from "./templates";
 import type { Architecture, Objective, SimulationResult } from "./types";
 
 const criterion = (metric: Objective["metric"], operator: Objective["operator"], target: number): Objective => ({ id: metric, label: metric, metric, operator, target });
@@ -66,6 +67,46 @@ describe("generateAlternatives", () => {
     expect(generateAlternatives(allSingleReplica).find((alt) => alt.id === "trim-replicas")).toBeUndefined();
   });
 
+  it("never trims a stream's consumer replicas below its consumer group count", () => {
+    const architecture: Architecture = {
+      nodes: [
+        createSystemNode("traffic", "traffic", { x: 0, y: 0 }),
+        { ...createSystemNode("stream", "stream", { x: 200, y: 0 }), replicas: 3, consumerGroups: 3 },
+      ],
+      edges: [{ id: "traffic-stream", source: "traffic", target: "stream" }],
+    };
+    const trimmed = generateAlternatives(architecture).find((alt) => alt.id === "trim-replicas");
+    // 3 consumer groups each need an owner: replicas cannot drop from 3, so there is nothing to trim.
+    expect(trimmed).toBeUndefined();
+  });
+
+  it("trims a stream down to, but not below, its consumer group floor", () => {
+    const architecture: Architecture = {
+      nodes: [
+        createSystemNode("traffic", "traffic", { x: 0, y: 0 }),
+        { ...createSystemNode("stream", "stream", { x: 200, y: 0 }), replicas: 4, consumerGroups: 2 },
+      ],
+      edges: [{ id: "traffic-stream", source: "traffic", target: "stream" }],
+    };
+    const trimmed = generateAlternatives(architecture).find((alt) => alt.id === "trim-replicas")!;
+    const stream = trimmed.architecture.nodes.find((node) => node.kind === "stream")!;
+    expect(stream.replicas).toBe(3);
+  });
+
+  it("scales an object store or stream as the bottleneck when it has the lowest capacity", () => {
+    const architecture: Architecture = {
+      nodes: [
+        createSystemNode("traffic", "traffic", { x: 0, y: 0 }),
+        { ...createSystemNode("server", "server", { x: 200, y: 0 }), capacity: 5000 },
+        { ...createSystemNode("object-store", "store", { x: 400, y: 0 }), capacity: 300 },
+      ],
+      edges: [{ id: "traffic-server", source: "traffic", target: "server" }, { id: "server-store", source: "server", target: "store" }],
+    };
+    const scaled = generateAlternatives(architecture).find((alt) => alt.id === "scale-bottleneck")!;
+    const store = scaled.architecture.nodes.find((node) => node.id === "store")!;
+    expect(store.capacity).toBe(Math.round(300 * 1.5));
+  });
+
   it("offers the reference only when a lesson is given and it differs from the learner's design", () => {
     const lesson = lessons.find((item) => item.id === "first-request")!;
     expect(generateAlternatives(lesson.architecture, lesson).find((alt) => alt.id === "reference")).toBeUndefined();
@@ -100,7 +141,7 @@ describe("compareAlternative", () => {
     engineVersion: "2.0.0", seed: 42, duration: 30, requestCount: 3000, completed: 3000, failed: 0, rejected: 0,
     p50: 20, p95: 50, p99: 70, throughput: 99, errorRate: 0, rejectedRate: 0, successRate: 1, staleReads: 0,
     staleReadRate: 0, retriesIssued: 0, amplification: 1, cost: 10, provisionedCost: 10, usageCost: 0, costBreakdown: [], maxQueueDepth: 1,
-    duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
+    duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0, conflictingWrites: 0, egressGb: 0, storageCost: 0, egressCost: 0,
     nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
   };
   const objectives = [criterion("p95", "lte", 60), criterion("errorRate", "lte", 0.01)];

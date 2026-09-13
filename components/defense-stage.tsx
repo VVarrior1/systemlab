@@ -185,6 +185,10 @@ function useStageClock(key: string, durationSeconds: number, active: boolean) {
 // ---------------------------------------------------------------- grading types
 
 interface GradedItem { id: string; score: 0 | 1 | 2; note: string }
+/** v2.3: a stated expectation ("cache: ~85% hits") that the measured run contradicted. */
+export interface GradedContradiction { nodeId: string; claim: string; measured: string; note: string }
+/** v2.3: rubric-style scoring of the data model text (keys, partition/hot path, query patterns, growth). */
+export interface DataModelItem { id: string; score: 0 | 1 | 2; note: string }
 interface GradedResult {
   mode?: "graded";
   items: GradedItem[];
@@ -195,6 +199,9 @@ interface GradedResult {
   techScore?: number;
   dataModelScore?: number;
   weakConcepts?: string[];
+  /** v2.3 */
+  contradictions?: GradedContradiction[];
+  dataModelItems?: DataModelItem[];
 }
 type GradeState =
   | { status: "idle" }
@@ -211,13 +218,36 @@ export interface InterviewTurn { role: "interviewer" | "candidate"; text: string
 /** The canvas-and-run snapshot the playground hands to the interviewer.
  *  Mirrors the server-side InterviewContext in lib/interview.ts; kept local so no server module
  *  reaches the client bundle. Anything the route rejects becomes a 400, which falls back to static. */
+export interface TechRationale { nodeId: string; label: string; kind: string; technology: string; why: string; expected: string }
+/** v2.3: the last check's per-node measurements, handed to the interviewer alongside the rationales
+ *  so it can call out contradictions; also shown next to the learner's claims in self mode. */
+export interface NodeMetricSummary {
+  nodeId: string;
+  label: string;
+  kind: string;
+  utilization: number;
+  processedPerSec: number;
+  errors: number;
+  hitRate?: number;
+  shardSpread?: number[];
+}
 export interface InterviewContext {
   architecture: string;
   result: string;
-  techChoices?: { nodeId: string; label: string; kind: string; technology: string; why: string }[];
+  rationales?: TechRationale[];
   dataModel?: string;
   estimation?: string;
   blankCanvas?: boolean;
+  metrics?: NodeMetricSummary[];
+}
+
+/** Renders one node's measured metrics as a short human-readable string for the self-mode comparison. */
+function formatNodeMetric(metric: NodeMetricSummary): string {
+  const parts = [`${Math.round(metric.utilization * 100)}% utilization`, `${metric.processedPerSec}/s processed`];
+  if (metric.errors > 0) parts.push(`${metric.errors} errors`);
+  if (metric.hitRate !== undefined) parts.push(`${Math.round(metric.hitRate * 100)}% hit rate`);
+  if (metric.shardSpread && metric.shardSpread.length > 0) parts.push(`shards ${metric.shardSpread.map((s) => `${Math.round(s * 100)}%`).join("/")}`);
+  return parts.join(", ");
 }
 
 const intentLabels: Record<InterviewIntent, string> = {
@@ -247,6 +277,9 @@ export interface DefenseOutcome {
   recoveryScore?: number;
   weakConcepts?: string[];
   estimationBias?: Partial<Record<EstimationId, number>>;
+  /** v2.3 */
+  contradictions?: number;
+  dataModelScore?: number;
 }
 
 export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount, onComplete, onActive, remixActive, interviewContext, wallClockOvertime, estimationOutcomes }: {
@@ -353,7 +386,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
     });
   }
 
-  function finish(outcome: { reflectionAttempts: number; defenseScore: number; defenseMode: "graded" | "self"; recoveryScore?: number; weakConcepts?: string[] }) {
+  function finish(outcome: { reflectionAttempts: number; defenseScore: number; defenseMode: "graded" | "self"; recoveryScore?: number; weakConcepts?: string[]; contradictions?: number; dataModelScore?: number }) {
     const overtimeSeconds = currentOvertime();
     const result: DefenseOutcome = {
       ...outcome,
@@ -528,6 +561,8 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
             defenseMode: "graded",
             ...(typeof body.recoveryScore === "number" ? { recoveryScore: body.recoveryScore } : {}),
             ...(Array.isArray(body.weakConcepts) ? { weakConcepts: body.weakConcepts } : {}),
+            ...(Array.isArray(body.contradictions) ? { contradictions: body.contradictions.length } : {}),
+            ...(typeof body.dataModelScore === "number" ? { dataModelScore: body.dataModelScore } : {}),
           });
         }
         return;
@@ -602,6 +637,11 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
           {grade.status === "graded" && <p className="defense-critique">{grade.result.critique}</p>}
           {grade.status === "self" && <p className="defense-critique">Self-assessed against the model answer and rubric.</p>}
           {outcome.interviewRounds > 0 && <p className="defense-interview-summary">{outcome.interviewRounds} interviewer round{outcome.interviewRounds === 1 ? "" : "s"}{outcome.recoveryScore !== undefined ? ` - recovery ${outcome.recoveryScore}/2` : ""}.</p>}
+          {(outcome.contradictions !== undefined || outcome.dataModelScore !== undefined) && <p className="defense-interview-summary">
+            {outcome.contradictions !== undefined && `${outcome.contradictions} contradiction${outcome.contradictions === 1 ? "" : "s"} between claims and the measured run.`}
+            {outcome.contradictions !== undefined && outcome.dataModelScore !== undefined && " "}
+            {outcome.dataModelScore !== undefined && `Data model scored ${outcome.dataModelScore}/2.`}
+          </p>}
           {outcome.weakConcepts && outcome.weakConcepts.length > 0 && <WeakConcepts ids={outcome.weakConcepts} rubric={lesson.defense.rubric} />}
           {finalDeductions.length > 0 && <DeductionsList deductions={finalDeductions} />}
         </> : <p className="reflection-feedback">You&apos;ve already completed this lesson. Revisit the mission any time — your reflection and defense answers aren&apos;t re-shown here.</p>}
@@ -740,6 +780,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
           onToggleRubric={toggleRubricItem}
           onConfirmSelf={confirmSelfAssessment}
           onRevise={reviseDesign}
+          interviewContext={interviewContext}
         />
       </> : <>
         {/* ------------------------------------------------ static follow-ups */}
@@ -795,6 +836,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
           onToggleRubric={toggleRubricItem}
           onConfirmSelf={confirmSelfAssessment}
           onRevise={reviseDesign}
+          interviewContext={interviewContext}
         />
       </>}
     </div>}
@@ -803,7 +845,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
 
 // ---------------------------------------------------------------- grade + self-assessment views
 
-function GradeViews({ grade, lesson, attempt, overtimeSeconds, penalties, gradeError, selfChecked, selfRevealed, selfRevised, onToggleRubric, onConfirmSelf, onRevise }: {
+function GradeViews({ grade, lesson, attempt, overtimeSeconds, penalties, gradeError, selfChecked, selfRevealed, selfRevised, onToggleRubric, onConfirmSelf, onRevise, interviewContext }: {
   grade: GradeState;
   lesson: Lesson;
   attempt: number;
@@ -816,6 +858,7 @@ function GradeViews({ grade, lesson, attempt, overtimeSeconds, penalties, gradeE
   onToggleRubric: (id: string) => void;
   onConfirmSelf: () => void;
   onRevise: () => void;
+  interviewContext?: InterviewContext;
 }) {
   return <>
     {grade.status === "graded" && (() => {
@@ -832,6 +875,8 @@ function GradeViews({ grade, lesson, attempt, overtimeSeconds, penalties, gradeE
           {result.dataModelScore !== undefined && <div className="defense-score-tile"><span>Data model</span><strong>{result.dataModelScore}/2</strong></div>}
         </div>}
         {penalized.deductions.length > 0 && <DeductionsList deductions={penalized.deductions} />}
+        {result.contradictions && result.contradictions.length > 0 && <ContradictionsList items={result.contradictions} />}
+        {result.dataModelItems && result.dataModelItems.length > 0 && <DataModelItemsList items={result.dataModelItems} />}
         <ul className="defense-rubric-results">
           {result.items.map((item) => {
             const rubricItem = lesson.defense.rubric.find((r) => r.id === item.id);
@@ -857,6 +902,19 @@ function GradeViews({ grade, lesson, attempt, overtimeSeconds, penalties, gradeE
         <summary>Model answer</summary>
         <p>{lesson.defense.modelAnswer}</p>
       </details>}
+      {interviewContext?.rationales && interviewContext.rationales.length > 0 && <div className="defense-claims-check">
+        <span className="field-label">Your claims vs. what the run measured</span>
+        <ul>
+          {interviewContext.rationales.map((rationale) => {
+            const metric = interviewContext.metrics?.find((m) => m.nodeId === rationale.nodeId);
+            return <li key={rationale.nodeId}>
+              <strong>{rationale.label}</strong>
+              <span className="defense-claim">expected {rationale.expected || "(nothing stated)"}</span>
+              {metric && <span className="defense-measured">measured: {formatNodeMetric(metric)}</span>}
+            </li>;
+          })}
+        </ul>
+      </div>}
       <ul className="defense-rubric-checklist">
         {lesson.defense.rubric.map((item: RubricItem) => <li key={item.id}>
           <label>
@@ -884,5 +942,26 @@ function WeakConcepts({ ids, rubric }: { ids: string[]; rubric: RubricItem[] }) 
 function DeductionsList({ deductions }: { deductions: Deduction[] }) {
   return <ul className="defense-deductions">
     {deductions.map((d) => <li key={d.reason}><span>{d.reason}</span><span>-{d.points}</span></li>)}
+  </ul>;
+}
+
+function ContradictionsList({ items }: { items: GradedContradiction[] }) {
+  return <div className="defense-contradictions">
+    <span className="field-label">Contradictions with the measured run</span>
+    <ul>
+      {items.map((item, index) => <li key={`${item.nodeId}-${index}`}>
+        <p>You expected <strong>{item.claim}</strong>; measured <strong>{item.measured}</strong>.</p>
+        {item.note && <p className="defense-contradiction-note">{item.note}</p>}
+      </li>)}
+    </ul>
+  </div>;
+}
+
+function DataModelItemsList({ items }: { items: DataModelItem[] }) {
+  return <ul className="defense-datamodel-items">
+    {items.map((item) => <li key={item.id}>
+      <span className="defense-rubric-score">{item.score}/2</span>
+      <p>{item.note}</p>
+    </li>)}
   </ul>;
 }

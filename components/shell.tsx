@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { ArrowUpRight, BookOpen, Check, ChevronRight, Dumbbell, FlaskConical, FolderOpen, Layers3, Menu, Network, UserRound, X } from "lucide-react";
+import { ArrowUpRight, BookOpen, Check, ChevronRight, Dumbbell, FlaskConical, FolderOpen, Layers3, Menu, Mic, Network, UserRound, X } from "lucide-react";
 import { lessons, chapters, chapterLessons } from "@/lib/curriculum";
 import { readProgress } from "@/lib/persistence";
 import { isCurrentProgress } from "@/lib/assessment-version";
@@ -30,6 +30,7 @@ export function Shell({ children, currentLessonId }: { children: ReactNode; curr
         <Link className={path.startsWith("/learn") ? "nav-item active" : "nav-item"} href="/learn"><BookOpen size={17} />Learning path<ChevronRight size={14} className="nav-arrow" /></Link>
         <Link className={path === "/sandbox" ? "nav-item active" : "nav-item"} href="/sandbox"><FlaskConical size={17} />Sandbox</Link>
         <Link className={path === "/gym" ? "nav-item active" : "nav-item"} href="/gym"><Dumbbell size={17} />Estimation gym</Link>
+        <Link className={path === "/mock" ? "nav-item active" : "nav-item"} href="/mock"><Mic size={17} />Mock interview</Link>
         <Link className={path === "/designs" ? "nav-item active" : "nav-item"} href="/designs"><FolderOpen size={17} />My designs</Link>
       </nav>
       <div className="sidebar-section-label">THE CURRICULUM <span>{lessons.length}</span></div>

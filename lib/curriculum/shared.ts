@@ -19,7 +19,7 @@ export const chapterTitles = [
   "Design briefs",
 ] as const;
 
-export const allKinds: NodeKind[] = ["server", "load-balancer", "database", "cache", "queue", "cdn", "rate-limiter"];
+export const allKinds: NodeKind[] = ["server", "load-balancer", "database", "cache", "queue", "cdn", "rate-limiter", "object-store", "stream"];
 
 /** A node placed on the canvas grid: column 0.. left to right, row 0 centered, -1 above, 1 below. */
 export function node(kind: NodeKind, id: string, column: number, overrides: Partial<SystemNode> = {}, row = 0): SystemNode {
@@ -71,6 +71,8 @@ const metricLabels: Record<ObjectiveMetric, (target: number, operator: Objective
   duplicateRate: (t) => `Duplicate deliveries at most ${Math.round(t * 1000) / 10}%`,
   deadLetterRate: (t) => `Dead-lettered jobs at most ${Math.round(t * 1000) / 10}%`,
   lostWrites: (t) => `Lost writes at most ${t}`,
+  conflictingWrites: (t) => `Conflicting writes at most ${t}`,
+  egressGb: (t) => `Egress at most ${t} GB`,
 };
 
 export function objective(metric: ObjectiveMetric, operator: Objective["operator"], target: number, label?: string): Objective {
@@ -89,6 +91,8 @@ export const p99 = (ms: number) => objective("p99", "lte", ms);
 export const duplicates = (rate: number) => objective("duplicateRate", "lte", rate);
 export const deadLetters = (rate: number) => objective("deadLetterRate", "lte", rate);
 export const lostWrites = (count: number) => objective("lostWrites", "lte", count);
+export const conflicts = (n: number) => objective("conflictingWrites", "lte", n);
+export const egress = (gb: number) => objective("egressGb", "lte", gb);
 
 const estimationPresets: Record<EstimationId, Omit<EstimationPrompt, "id">> = {
   p95: { label: "Predicted P95 latency after your change", unit: "ms", tolerance: 0.25 },

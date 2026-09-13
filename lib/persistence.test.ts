@@ -602,6 +602,103 @@ describe("v2 progress fields", () => {
   });
 });
 
+describe("v2.3 node fields (leader election, object store, stream)", () => {
+  function baseArchitecture(nodeOverride: Partial<SystemNode> = {}) {
+    return {
+      nodes: [
+        { id: "traffic", kind: "traffic", label: "Traffic", position: { x: 0, y: 0 }, capacity: 1000, latency: 0, replicas: 1, cacheHitRate: 0, enabled: true, cost: 0 },
+        { id: "app", kind: "server", label: "Application", position: { x: 200, y: 0 }, capacity: 100, latency: 25, replicas: 1, cacheHitRate: 0, enabled: true, cost: 2, ...nodeOverride },
+      ],
+      edges: [{ id: "traffic-app", source: "traffic", target: "app" }],
+    };
+  }
+
+  it("accepts every v2.3 node field within bounds", () => {
+    const architecture = validateArchitecture(baseArchitecture({
+      election: "consensus", electionMs: 3000, storedGb: 250, partitions: 12, consumerGroups: 3, retentionSeconds: 172_800,
+    }));
+    const app = architecture.nodes[1] as SystemNode;
+    expect(app.election).toBe("consensus");
+    expect(app.electionMs).toBe(3000);
+    expect(app.storedGb).toBe(250);
+    expect(app.partitions).toBe(12);
+    expect(app.consumerGroups).toBe(3);
+    expect(app.retentionSeconds).toBe(172_800);
+  });
+
+  it("accepts the object-store and stream kinds", () => {
+    const architecture = validateArchitecture({
+      nodes: [
+        { id: "traffic", kind: "traffic", label: "Traffic", position: { x: 0, y: 0 }, capacity: 1000, latency: 0, replicas: 1, cacheHitRate: 0, enabled: true, cost: 0 },
+        { id: "store", kind: "object-store", label: "Store", position: { x: 200, y: 0 }, capacity: 3000, latency: 40, replicas: 1, cacheHitRate: 0, enabled: true, cost: 0.4, storedGb: 100 },
+        { id: "stream", kind: "stream", label: "Stream", position: { x: 400, y: 0 }, capacity: 20000, latency: 2, replicas: 1, cacheHitRate: 0, enabled: true, cost: 0.8, partitions: 6, consumerGroups: 1, retentionSeconds: 86400 },
+      ],
+      edges: [{ id: "traffic-store", source: "traffic", target: "store" }, { id: "store-stream", source: "store", target: "stream" }],
+    });
+    expect(architecture.nodes[1]).toMatchObject({ kind: "object-store", storedGb: 100 });
+    expect(architecture.nodes[2]).toMatchObject({ kind: "stream", partitions: 6, consumerGroups: 1, retentionSeconds: 86400 });
+  });
+
+  it.each([
+    ["electionMs", 99], ["electionMs", 60001],
+    ["storedGb", -1], ["storedGb", 100_001],
+    ["partitions", 0], ["partitions", 65], ["partitions", 1.5],
+    ["consumerGroups", 0], ["consumerGroups", 9], ["consumerGroups", 1.5],
+    ["retentionSeconds", -1], ["retentionSeconds", 604_801],
+  ])("rejects an out-of-range %s value", (field, value) => {
+    expect(() => validateArchitecture(baseArchitecture({ [field]: value } as Partial<SystemNode>))).toThrow();
+  });
+
+  it("rejects an invalid election mode", () => {
+    expect(() => validateArchitecture(baseArchitecture({ election: "bully" } as unknown as Partial<SystemNode>))).toThrow();
+  });
+});
+
+describe("v2.3 workload and failure fields (payload/object share, partition failures)", () => {
+  function baseWorkload(overrides: Partial<Workload> = {}): Workload {
+    return { requestRate: 100, readRatio: 0.85, duration: 30, seed: 1, pattern: "steady", failure: "none", ...overrides };
+  }
+
+  it("accepts payloadKb and objectShare within bounds", () => {
+    const workload = validateWorkload(baseWorkload({ payloadKb: 1024, objectShare: 0.4 }));
+    expect(workload.payloadKb).toBe(1024);
+    expect(workload.objectShare).toBe(0.4);
+  });
+
+  it.each([["payloadKb", 0], ["payloadKb", 100_001], ["objectShare", -0.01], ["objectShare", 1.01]])(
+    "rejects an out-of-range %s value",
+    (field, value) => {
+      expect(() => validateWorkload(baseWorkload({ [field]: value } as unknown as Partial<Workload>))).toThrow();
+    },
+  );
+
+  it("accepts the partition and slow-partition failure kinds", () => {
+    const workload = validateWorkload(baseWorkload({
+      failures: [{ kind: "partition", at: 0.4, duration: 10 }, { kind: "slow-partition", at: 0.6, duration: 5, factor: 3 }],
+    }));
+    expect(workload.failures).toHaveLength(2);
+    expect(workload.failures?.[0]).toEqual({ kind: "partition", at: 0.4, duration: 10 });
+  });
+});
+
+describe("v2.3 progress fields (mock interview, reasoning grading)", () => {
+  const base: ProgressRecord = { lessonId: "first-request", completedAt: "2026-09-09T12:00:00.000Z", bestP95: 100, cost: 8, assessmentVersion: ASSESSMENT_VERSION };
+
+  it("accepts every optional v2.3 progress field within bounds", () => {
+    const validated = validateProgress({ ...base, mockSessions: 3, performanceScore: 72, contradictions: 2, dataModelScore: 85 });
+    expect(validated).toMatchObject({ mockSessions: 3, performanceScore: 72, contradictions: 2, dataModelScore: 85 });
+  });
+
+  it.each([
+    ["mockSessions", -1], ["mockSessions", 1.5], ["mockSessions", 100_001],
+    ["performanceScore", -1], ["performanceScore", 101],
+    ["contradictions", -1], ["contradictions", 1.5], ["contradictions", 1001],
+    ["dataModelScore", -1], ["dataModelScore", 101],
+  ])("rejects an out-of-range %s value", (field, value) => {
+    expect(() => validateProgress({ ...base, [field]: value })).toThrow();
+  });
+});
+
 describe("attempts and estimation gym", () => {
   it("counts attempts per lesson, starting from zero", () => {
     expect(readAttempts("first-request")).toBe(0);

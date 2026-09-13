@@ -9,7 +9,7 @@ const result: SimulationResult = {
   completed: 3000, failed: 0, rejected: 0, p50: 30, p95: 50, p99: 60, throughput: 99,
   errorRate: 0, rejectedRate: 0, successRate: 1, staleReads: 0, staleReadRate: 0,
   retriesIssued: 0, amplification: 1, cost: 7, provisionedCost: 7, usageCost: 0, costBreakdown: [], maxQueueDepth: 1,
-  duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0,
+  duplicates: 0, duplicateRate: 0, deadLettered: 0, deadLetterRate: 0, lostWrites: 0, poolRejections: 0, conflictingWrites: 0, egressGb: 0, storageCost: 0, egressCost: 0,
   nodes: [], samples: [], traces: [], events: [], insights: [], assumptions: [],
 };
 const criterion = (metric: Objective["metric"], operator: Objective["operator"], target: number): Objective => ({ id: metric, label: metric, metric, operator, target });
@@ -191,6 +191,13 @@ describe("objectivePasses covers every ObjectiveMetric", () => {
     expect(objectivePasses({ ...result, deadLetterRate: 0.02 }, criterion("deadLetterRate", "lte", 0.01))).toBe(false);
     expect(objectivePasses({ ...result, lostWrites: 2 }, criterion("lostWrites", "lte", 2))).toBe(true);
     expect(objectivePasses({ ...result, lostWrites: 3 }, criterion("lostWrites", "lte", 2))).toBe(false);
+  });
+
+  it("reads conflictingWrites and egressGb straight from the result (v2.3 metrics)", () => {
+    expect(objectivePasses({ ...result, conflictingWrites: 0 }, criterion("conflictingWrites", "lte", 0))).toBe(true);
+    expect(objectivePasses({ ...result, conflictingWrites: 1 }, criterion("conflictingWrites", "lte", 0))).toBe(false);
+    expect(objectivePasses({ ...result, egressGb: 5 }, criterion("egressGb", "lte", 5))).toBe(true);
+    expect(objectivePasses({ ...result, egressGb: 5.001 }, criterion("egressGb", "lte", 5))).toBe(false);
   });
 });
 

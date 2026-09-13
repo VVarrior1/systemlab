@@ -25,7 +25,7 @@ function pickByPressure(architecture: Architecture, result: SimulationResult): S
 /** No run available yet: guess the bottleneck as the smallest server or database. */
 function pickByCapacity(architecture: Architecture): SystemNode | undefined {
   return architecture.nodes
-    .filter((node) => node.enabled && (node.kind === "server" || node.kind === "database"))
+    .filter((node) => node.enabled && (node.kind === "server" || node.kind === "database" || node.kind === "object-store" || node.kind === "stream"))
     .sort((a, b) => a.capacity - b.capacity)[0];
 }
 
@@ -89,7 +89,9 @@ function trimReplicas(architecture: Architecture): Alternative | null {
   const trimmed = clone(architecture);
   let changed = false;
   for (const node of trimmed.nodes) {
-    const quorumFloor = node.kind === "database" && node.dbMode === "quorum" ? Math.max(node.quorumWrite ?? 2, node.quorumRead ?? 2) : 1;
+    const quorumFloor = node.kind === "database" && node.dbMode === "quorum" ? Math.max(node.quorumWrite ?? 2, node.quorumRead ?? 2)
+      : node.kind === "stream" ? Math.max(node.consumerGroups ?? 1, 1)
+      : 1;
     if (node.replicas >= 2 && node.replicas - 1 >= quorumFloor) {
       node.replicas -= 1;
       changed = true;

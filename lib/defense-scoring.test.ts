@@ -109,3 +109,49 @@ describe("applyPenalties wall-clock overtime", () => {
     expect(result.total).toBe(0);
   });
 });
+
+describe("applyPenalties contradictions", () => {
+  it("is free when there are no contradictions", () => {
+    const result = applyPenalties(90, { hintsUsed: 1, reflectionAttempts: 1, overtimeSeconds: 0, contradictions: 0 });
+    expect(result).toEqual({ total: 90, deductions: [] });
+  });
+
+  it("treats an absent contradictions count as zero", () => {
+    const result = applyPenalties(90, { hintsUsed: 1, reflectionAttempts: 1, overtimeSeconds: 0 });
+    expect(result).toEqual({ total: 90, deductions: [] });
+  });
+
+  it("deducts 5 per contradiction", () => {
+    const result = applyPenalties(90, { hintsUsed: 1, reflectionAttempts: 1, overtimeSeconds: 0, contradictions: 3 });
+    expect(result.total).toBe(75);
+    expect(result.deductions).toEqual([{ reason: "3 contradictions between claims and the measured run", points: 15 }]);
+  });
+
+  it("uses singular wording for exactly one contradiction", () => {
+    const result = applyPenalties(90, { hintsUsed: 1, reflectionAttempts: 1, overtimeSeconds: 0, contradictions: 1 });
+    expect(result.total).toBe(85);
+    expect(result.deductions).toEqual([{ reason: "1 contradiction between claims and the measured run", points: 5 }]);
+  });
+
+  it("has no cap and stacks with every other deduction", () => {
+    const result = applyPenalties(100, { hintsUsed: 2, reflectionAttempts: 2, overtimeSeconds: 600, wallClockOvertime: 600, contradictions: 4 });
+    expect(result.deductions).toEqual([
+      { reason: "1 hint beyond the first", points: 5 },
+      { reason: "1 wrong reflection attempt", points: 5 },
+      { reason: "600s overtime on the interview clock", points: 10 },
+      { reason: "600s over the lesson wall clock", points: 10 },
+      { reason: "4 contradictions between claims and the measured run", points: 20 },
+    ]);
+    expect(result.total).toBe(50);
+  });
+
+  it("floors the total at 0 even with many contradictions", () => {
+    const result = applyPenalties(10, { hintsUsed: 0, reflectionAttempts: 0, overtimeSeconds: 0, contradictions: 10 });
+    expect(result.total).toBe(0);
+  });
+
+  it("ignores a negative contradictions count instead of adding points", () => {
+    const result = applyPenalties(90, { hintsUsed: 1, reflectionAttempts: 1, overtimeSeconds: 0, contradictions: -2 });
+    expect(result).toEqual({ total: 90, deductions: [] });
+  });
+});

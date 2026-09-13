@@ -3,7 +3,10 @@ import { hasGeminiKey } from "../../../lib/gemini";
 import {
   validateInterviewRequest,
   generateTurn,
+  generateMockTurn,
   gradeInterviewWithGemini,
+  gradeMockInterviewWithGemini,
+  buildMockScript,
 } from "../../../lib/interview";
 
 export const runtime = "nodejs";
@@ -53,7 +56,37 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   if (!hasGeminiKey()) {
+    if (request.mode === "mock") {
+      return Response.json({ mode: "self", script: buildMockScript(lesson) }, { status: 501 });
+    }
     return Response.json({ mode: "self", followUps: lesson.defense.followUps }, { status: 501 });
+  }
+
+  if (request.mode === "mock") {
+    if (request.stage === "turn") {
+      try {
+        const turn = await generateMockTurn(
+          lesson,
+          request.phase!,
+          request.elapsedSeconds!,
+          request.phaseElapsedSeconds!,
+          request.transcript,
+          request.context
+        );
+        return Response.json(turn, { status: 200 });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Mock interview turn generation failed.";
+        return Response.json({ error: `Interviewer service error: ${message}` }, { status: 502 });
+      }
+    }
+
+    try {
+      const result = await gradeMockInterviewWithGemini(lesson, request.transcript, request.context);
+      return Response.json(result, { status: 200 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Mock interview grading failed.";
+      return Response.json({ error: `Interviewer service error: ${message}` }, { status: 502 });
+    }
   }
 
   if (request.stage === "turn") {

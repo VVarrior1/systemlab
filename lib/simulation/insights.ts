@@ -42,6 +42,18 @@ export interface NodeTelemetry {
   deadLettered: number;
   burstErrors: number;
   flapCycles: number;
+  /** v2.3 */
+  storedGb: number;
+  egressGb: number;
+  partitions: number;
+  consumerGroups: number;
+  partitionDeliveries: number[];
+  partitionWaitMs: number[];
+  partitionReplays: number[];
+  election: "heartbeat" | "consensus";
+  electionMs: number;
+  splitConflicts: number;
+  splitMinorityRejects: number;
   usageCost: number;
 }
 
@@ -86,6 +98,12 @@ export interface Telemetry {
   deadLetterRate: number;
   lostWrites: number;
   poolRejections: number;
+  /** v2.3 */
+  conflictingWrites: number;
+  egressGb: number;
+  storedGb: number;
+  storageCost: number;
+  egressCost: number;
   provisionedCost: number;
   usageCost: number;
   cost: number;
@@ -101,6 +119,8 @@ type Insight = SimulationResult["insights"][number];
 const round = (value: number) => Math.round(value * 100) / 100;
 const percent = (value: number) => `${round(value * 100)}%`;
 const count = (value: number) => value.toLocaleString("en-US");
+/** Storage is cents-per-GB-hour money: two decimals would round every realistic bill to zero. */
+const fine = (value: number) => (value > 0 && value < 0.001 ? "under 0.001" : String(Math.round(value * 1000) / 1000));
 
 function pressureOf(node: NodeTelemetry): number {
   if (!node.isApplication) return node.metric.utilization;
@@ -385,6 +405,78 @@ export function buildInsights(telemetry: Telemetry): Insight[] {
         dominant && dominant.usageCost > 0 ? ` (${dominant.label} alone accounts for ${round(dominant.usageCost)})` : ""
       }. Database operations are the expensive ones and writes are billed twice, so a cache that removes read traffic cuts the usage bill as well as the latency, while an idle replica only ever costs you provisioned credits.`,
     });
+  }
+
+  // ---- storage and egress --------------------------------------------------
+  if (telemetry.storageCost > 0) {
+    const stores = telemetry.nodes.filter((node) => node.kind === "object-store");
+    insights.push({
+      severity: "good",
+      title: `Storage for ${count(Math.round(telemetry.storedGb))} GB costs ${fine(telemetry.storageCost)} credits an hour`,
+      detail: `${stores.map((node) => `${node.label}: ${count(Math.round(node.storedGb))} GB`).join("; ") || "No object store"}. Storage is a level, not a flow: you pay for every byte you keep for every hour you keep it, whether or not a single request reads it. That is why lifecycle rules, tiering and deletion are a design decision and not an afterthought.`,
+      ...(stores.length === 1 ? { nodeId: stores[0].id } : {}),
+    });
+  }
+  if (telemetry.egressCost > 0) {
+    const share = telemetry.egressCost / (telemetry.cost || 1);
+    const servers = telemetry.nodes.filter((node) => node.egressGb > 0).sort((a, b) => b.egressGb - a.egressGb);
+    insights.push({
+      severity: share >= 0.5 ? "critical" : share >= 0.2 ? "warning" : "good",
+      title: `Egress is ${percent(share)} of the ${round(telemetry.cost)} credit bill`,
+      detail: `This design serves ${round(telemetry.egressGb)} GB an hour at ${telemetry.workload.payloadKb.toLocaleString("en-US")} KB per object${
+        servers.length ? ` (${servers.map((node) => `${node.label}: ${round(node.egressGb)} GB`).join("; ")})` : ""
+      }, which costs ${round(telemetry.egressCost)} credits against ${round(telemetry.provisionedCost)} for all the capacity you provisioned. Bytes served, not requests served, is what a media system pays for: a cache in front of the store cuts the origin's egress, but the bytes still leave from the edge. Serve smaller objects, serve fewer of them, or move the serving closer to the user.`,
+      ...(servers.length === 1 ? { nodeId: servers[0].id } : {}),
+    });
+  }
+
+  // ---- split brain ---------------------------------------------------------
+  for (const node of telemetry.nodes) {
+    if (node.dbMode !== "leader-follower") continue;
+    if (node.splitConflicts > 0) {
+      insights.push({
+        severity: "critical",
+        title: `${node.label}: ${count(node.splitConflicts)} writes were accepted by a second leader`,
+        detail: `A network partition left replica 1 isolated. Heartbeat election cannot tell "the leader is gone" from "I cannot reach the leader", so the majority elected a new leader after ${count(node.electionMs)} ms while the old one kept acknowledging writes from the clients on its side. Both sides were leaders at once, and when the partition healed the minority's writes were discarded: they are counted as lost writes as well as conflicts. Consensus election fixes this by refusing writes without a quorum, which costs you availability on the minority side instead of correctness.`,
+        nodeId: node.id,
+      });
+    } else if (node.splitMinorityRejects > 0) {
+      insights.push({
+        severity: "good",
+        title: `${node.label} refused ${count(node.splitMinorityRejects)} writes on the isolated side`,
+        detail: `Consensus election needs a majority before anyone may accept a write, so the isolated replica stepped down and failed its clients' writes instead of accepting versions that would be thrown away later. Those clients saw errors during the partition; nobody saw an acknowledged write disappear. That is the CAP trade made explicit: this design chose consistency over availability for the minority side.`,
+        nodeId: node.id,
+      });
+    }
+  }
+
+  // ---- streams -------------------------------------------------------------
+  for (const node of telemetry.nodes) {
+    if (node.kind !== "stream") continue;
+    const waits = node.partitionWaitMs.map((wait, partition) => (node.partitionDeliveries[partition] ? wait / node.partitionDeliveries[partition] : 0));
+    const busy = waits.filter((wait) => wait > 0);
+    if (busy.length && node.partitions > 1) {
+      const max = Math.max(...waits);
+      const mean = waits.reduce((sum, value) => sum + value, 0) / waits.length;
+      const slowest = waits.indexOf(max);
+      const skew = mean > 0 ? max / mean : 0;
+      insights.push({
+        severity: skew >= 3 ? "critical" : skew >= 1.5 ? "warning" : "good",
+        title: `${node.label}: partition ${slowest} waits ${round(max)} ms against a ${round(mean)} ms average`,
+        detail: `Messages waited ${waits.map((wait, partition) => `p${partition}: ${round(wait)} ms`).join(", ")} for their consumer. A partition is a FIFO lane owned by exactly one consumer in each group, so a slow or stuck consumer backs up its own partition and nothing else: the other partitions keep up while one falls behind. You cannot fix that by adding consumers past the partition count, because the extra ones get no partitions. More partitions buys parallelism and costs you ordering scope${
+          node.partitionReplays.some((value) => value > 0) ? `, and ${count(node.partitionReplays.reduce((sum, value) => sum + value, 0))} messages were replayed from a committed offset after a consumer came back` : ""
+        }.`,
+        nodeId: node.id,
+      });
+    }
+    if (node.consumerGroups > 1) {
+      insights.push({
+        severity: "warning",
+        title: `${node.label} fans every message out to ${count(node.consumerGroups)} consumer groups`,
+        detail: `${count(node.deliveries)} deliveries came out of ${count(node.metric.processed)} messages appended. A consumer group is an independent reader of the whole log, so each one multiplies the work the consumer pool has to do and the capacity you have to provision for it. That is the point of a log rather than a queue - the search index and the billing job both see every event - but the consumer fleet has to be sized for messages x groups, not for messages.`,
+        nodeId: node.id,
+      });
+    }
   }
 
   // ---- all clear -----------------------------------------------------------

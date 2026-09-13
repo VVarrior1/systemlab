@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { architectureCost, componentCost, costRates, nodeCost, usageCost, usageRates } from "./cost";
+import { HOURS_PER_MONTH, architectureCost, componentCost, costRates, egressCostFor, nodeCost, storageCostFor, storageRates, usageCost, usageRates } from "./cost";
 import { createSystemNode } from "./templates";
 
 describe("cost 2.0", () => {
@@ -60,5 +60,43 @@ describe("cost 2.1 usage", () => {
     const counts = { server: 100_000, database: 100_000, databaseWrites: 20_000, cache: 50_000, queue: 10_000 };
     const doubled = Object.fromEntries(Object.entries(counts).map(([key, value]) => [key, value * 2]));
     expect(usageCost(doubled)).toBeCloseTo(usageCost(counts) * 2, 6);
+  });
+});
+
+describe("cost 2.3 storage and egress", () => {
+  it("prices a GB kept for an hour at a seven-hundred-and-thirtieth of the monthly rate", () => {
+    expect(HOURS_PER_MONTH).toBe(730);
+    expect(storageCostFor(730_000)).toBeCloseTo(730_000 * 0.02 / 730, 6);
+    expect(storageCostFor(1000)).toBeCloseTo(0.027, 3);
+    expect(storageCostFor(0)).toBe(0);
+    expect(storageCostFor(undefined)).toBe(0);
+    expect(storageCostFor(-50)).toBe(0);
+    // Storage is linear, which is exactly why a forgotten bucket costs real money. (The helper rounds
+    // to a thousandth of a credit, so the linearity check needs numbers above that rounding floor.)
+    expect(storageCostFor(20_000)).toBeCloseTo(storageCostFor(10_000) * 2, 3);
+  });
+
+  it("prices egress per GB served, far above a GB kept", () => {
+    expect(egressCostFor(100)).toBeCloseTo(100 * storageRates.egressGb, 6);
+    expect(egressCostFor(0)).toBe(0);
+    expect(egressCostFor(undefined)).toBe(0);
+    expect(egressCostFor(-10)).toBe(0);
+    // A GB served once costs more than three thousand hours of keeping that GB.
+    expect(egressCostFor(1)).toBeGreaterThan(storageCostFor(1) * 3000);
+  });
+
+  it("adds both to the usage bill without disturbing the per-operation rows", () => {
+    expect(usageCost({ storedGb: 1000 })).toBeCloseTo(storageCostFor(1000), 6);
+    expect(usageCost({ egressGb: 20 })).toBeCloseTo(egressCostFor(20), 6);
+    expect(usageCost({ database: 1000, storedGb: 1000, egressGb: 20 })).toBeCloseTo(usageRates.database + storageCostFor(1000) + egressCostFor(20), 3);
+    expect(usageCost({ storedGb: -1, egressGb: -1 })).toBe(0);
+  });
+
+  it("keeps object stores and streams on the provisioned curve", () => {
+    expect(costRates["object-store"]).toBeDefined();
+    expect(costRates.stream).toBeDefined();
+    expect(nodeCost(createSystemNode("object-store", "s", { x: 0, y: 0 }))).toBeGreaterThan(0);
+    // Capacity in an object store is requests, not bytes: the bytes are billed by storage and egress.
+    expect(componentCost({ kind: "object-store", capacity: 6000 })).toBeLessThan(componentCost({ kind: "database", capacity: 6000 }));
   });
 });

@@ -98,6 +98,7 @@ Existing v1 ids keep their ids. Every lesson below is `sim` unless marked WRITTE
 - `gray-failure`: an error burst on one replica that health checks miss; breaker/retry budget and least-connections.
 - `connection-pool-starvation`: slow dependency and a small pool; idle server, failing requests; timeout plus pool sizing.
 - WRITTEN `transactions-and-sagas`, WRITTEN `stream-processing-and-search`.
+- v2.3: `object-storage-and-egress` (CDN in front of an object store; egress dominates cost), `partitioned-streams` (a slow partition; consumer sizing), `split-brain` (heartbeat vs consensus election under a partition; conflictingWrites objective).
 
 ### 11 Interview toolkit (WRITTEN, Intermediate)
 - `framing-and-requirements`: functional vs non-functional, clarifying questions that matter, SLOs, scale numbers, out of scope. Defense: frame a given prompt.
@@ -105,6 +106,7 @@ Existing v1 ids keep their ids. Every lesson below is `sim` unless marked WRITTE
 - `api-design-and-idempotency`: REST vs RPC, pagination, versioning, idempotency keys, retries safety. Defense: design an API for a described feature.
 - `storage-engines-and-indexing`: B-tree vs LSM, indexes, read/write amplification, when to pick which store. Defense: choose a store for three workloads.
 - `observability-and-slos`: golden signals, SLIs/SLOs/error budgets, alerting on symptoms, tracing. Defense: SLOs and alerts for the launch-day system.
+- v2.3 WRITTEN `security-and-tenancy` and `schema-migration-and-versioning`.
 
 ### 12 Design briefs (BRIEF, Expert, 25-35 min; blank canvas since v2.1)
 Each brief: an ambiguous one-paragraph prompt; 6-8 clarifications (≥ 4 relevant: read/write ratio, peak factor, latency SLO, consistency need, data retention, region mix; some irrelevant: team size, programming language, brand colours); a workload and objectives that are only sensible once the relevant answers are known; a starter with a bare stack; a reference that passes; estimation on dbLoad, bottleneckCapacity, cost; 3 follow-ups; a rubric that rewards requirement framing and tradeoff articulation.

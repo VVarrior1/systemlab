@@ -118,11 +118,31 @@ describe("reviewQueue", () => {
       lesson({ id: "sim-lesson", concept: "b", chapter: "Foundations", kind: "sim" }),
     ];
     const records = [
-      progress({ lessonId: "brief-lesson", completedAt: "2026-09-01T00:00:00Z" }),
+      progress({ lessonId: "brief-lesson", completedAt: "2026-09-01T00:00:00Z", mockSessions: 1 }),
       progress({ lessonId: "sim-lesson", completedAt: "2026-09-01T00:00:00Z", blankCanvas: true }),
     ];
     const queue = reviewQueue(records, lessons, now);
     expect(queue.some((item) => item.reason === "blank-canvas-next")).toBe(false);
+  });
+
+  it("flags a completed brief with no mock session for mock-next (v2.3)", () => {
+    const lessons = [lesson({ id: "brief-lesson", concept: "a", chapter: "Foundations", kind: "brief" })];
+    const records = [progress({ lessonId: "brief-lesson", completedAt: "2026-09-01T00:00:00Z" })];
+    const queue = reviewQueue(records, lessons, now);
+    expect(queue.some((item) => item.reason === "mock-next")).toBe(true);
+  });
+
+  it("does not flag mock-next for a brief already mocked, or for a non-brief lesson", () => {
+    const lessons = [
+      lesson({ id: "brief-lesson", concept: "a", chapter: "Foundations", kind: "brief" }),
+      lesson({ id: "sim-lesson", concept: "b", chapter: "Foundations", kind: "sim" }),
+    ];
+    const records = [
+      progress({ lessonId: "brief-lesson", completedAt: "2026-09-01T00:00:00Z", mockSessions: 2 }),
+      progress({ lessonId: "sim-lesson", completedAt: "2026-09-01T00:00:00Z", blankCanvas: true }),
+    ];
+    const queue = reviewQueue(records, lessons, now);
+    expect(queue.some((item) => item.reason === "mock-next")).toBe(false);
   });
 });
 
@@ -194,5 +214,24 @@ describe("masterySummary", () => {
     const summary = masterySummary(records, lessons, now);
     expect(summary.strongest[0]).toBe("strong");
     expect(summary.weakest[0]).toBe("weak");
+  });
+
+  it("blends performanceScore into the defense component at 60/40 when a mock session graded it (v2.3)", () => {
+    const lessons = [
+      lesson({ id: "l1", concept: "a", chapter: "Ch1" }),
+      lesson({ id: "l2", concept: "b", chapter: "Ch2" }),
+    ];
+    // graded = 80*0.6 + 100*0.4 = 88; completion 50% -> 20, defense 88 -> 26.4, estimation 0 -> 0, breadth 50% -> 5 => 51.4 -> 51
+    const records = [progress({ lessonId: "l1", completedAt: "2026-09-01T00:00:00Z", defenseScore: 80, performanceScore: 100 })];
+    const summary = masterySummary(records, lessons, now);
+    expect(summary.score).toBe(51);
+  });
+
+  it("uses performanceScore alone when a mock-only record has no written defense score", () => {
+    const lessons = [lesson({ id: "l1", concept: "a", chapter: "Ch1" })];
+    // completion 100% -> 40, defense (performance only) 60 -> 18, estimation 0 -> 0, breadth 100% -> 10 => 68
+    const records = [progress({ lessonId: "l1", completedAt: "2026-09-01T00:00:00Z", performanceScore: 60 })];
+    const summary = masterySummary(records, lessons, now);
+    expect(summary.score).toBe(68);
   });
 });

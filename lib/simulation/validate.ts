@@ -1,15 +1,17 @@
 import type { Architecture, NodeKind, SystemNode, Workload } from "../types";
 import { normalizeNode, normalizeWorkload } from "../templates";
 
-const kinds: NodeKind[] = ["traffic", "server", "load-balancer", "database", "cache", "queue", "cdn", "rate-limiter"];
+const kinds: NodeKind[] = ["traffic", "server", "load-balancer", "database", "cache", "queue", "cdn", "rate-limiter", "object-store", "stream"];
 const patterns = ["steady", "spike", "ramp", "flash"];
 const legacyFailures = ["none", "server", "database"];
-const failureKinds = ["server", "database", "cache-flush", "slow-database", "slow-server", "region", "flapping", "error-burst"];
+const failureKinds = ["server", "database", "cache-flush", "slow-database", "slow-server", "region", "flapping", "error-burst", "partition", "slow-partition"];
 
 /** What traffic, a CDN or a rate limiter may hand a request to. */
 const entryTargets: NodeKind[] = ["server", "load-balancer", "cdn", "rate-limiter"];
 /** What an application server may call. */
-const dependencyTargets: NodeKind[] = ["cache", "database", "queue", "server", "rate-limiter"];
+const dependencyTargets: NodeKind[] = ["cache", "database", "queue", "server", "rate-limiter", "object-store", "stream"];
+/** What may feed a worker server its jobs. */
+const workerSources: NodeKind[] = ["queue", "stream"];
 
 export const LIMITS = {
   nodes: 48,
@@ -21,6 +23,12 @@ export const LIMITS = {
   maxDeliveries: 10,
   keySpace: 100000,
   shards: 16,
+  partitions: 64,
+  consumerGroups: 8,
+  retentionSeconds: 604800,
+  storedGb: 100000,
+  payloadKb: 100000,
+  electionMs: 60000,
   replicas: 16,
   capacity: 100000,
   latency: 10000,
@@ -102,6 +110,12 @@ export function validateSimulation(architecture: Architecture, workload: Workloa
         throw new Error(`${node.label}: failover time must be between 0 and 60,000 ms.`);
       }
       if (!["eventual", "read-your-writes"].includes(settings.consistency)) throw new Error(`${node.label}: choose a supported consistency setting.`);
+      if (!["heartbeat", "consensus"].includes(settings.election)) {
+        throw new Error(`${node.label}: choose heartbeat or consensus leader election.`);
+      }
+      if (!Number.isFinite(settings.electionMs) || settings.electionMs < 100 || settings.electionMs > LIMITS.electionMs) {
+        throw new Error(`${node.label}: electing a leader must take between 100 and ${LIMITS.electionMs.toLocaleString("en-US")} ms.`);
+      }
       if (settings.dbMode === "sharded" && settings.shards * node.replicas > 64) {
         throw new Error(`${node.label}: shards times replicas must stay at or below 64 lanes.`);
       }
@@ -134,6 +148,22 @@ export function validateSimulation(architecture: Architecture, workload: Workloa
       }
       if (!Number.isInteger(settings.maxDeliveries) || settings.maxDeliveries < 1 || settings.maxDeliveries > LIMITS.maxDeliveries) {
         throw new Error(`${node.label}: deliver a message between 1 and ${LIMITS.maxDeliveries} times before dead-lettering it.`);
+      }
+    }
+    if (node.kind === "object-store") {
+      if (!Number.isFinite(settings.storedGb) || settings.storedGb < 0 || settings.storedGb > LIMITS.storedGb) {
+        throw new Error(`${node.label}: the object store may keep between 0 and ${LIMITS.storedGb.toLocaleString("en-US")} GB. You pay for every GB kept, every hour.`);
+      }
+    }
+    if (node.kind === "stream") {
+      if (!Number.isInteger(settings.partitions) || settings.partitions < 1 || settings.partitions > LIMITS.partitions) {
+        throw new Error(`${node.label}: use between 1 and ${LIMITS.partitions} partitions. Partitions are the unit of both ordering and consumer parallelism.`);
+      }
+      if (!Number.isInteger(settings.consumerGroups) || settings.consumerGroups < 1 || settings.consumerGroups > LIMITS.consumerGroups) {
+        throw new Error(`${node.label}: use between 1 and ${LIMITS.consumerGroups} consumer groups. Every group receives every message, so each one multiplies the consumer work.`);
+      }
+      if (!Number.isFinite(settings.retentionSeconds) || settings.retentionSeconds < 0 || settings.retentionSeconds > LIMITS.retentionSeconds) {
+        throw new Error(`${node.label}: retention must be between 0 and ${LIMITS.retentionSeconds.toLocaleString("en-US")} seconds (7 days).`);
       }
     }
     if (node.kind === "rate-limiter") {
@@ -199,6 +229,12 @@ export function validateSimulation(architecture: Architecture, workload: Workloa
       }
     } else if (node.kind === "database") {
       if (next.length) throw new Error(`${node.label}: databases are the end of a request route.`);
+    } else if (node.kind === "object-store") {
+      if (next.length) throw new Error(`${node.label}: object stores are the end of a request route.`);
+    } else if (node.kind === "stream") {
+      if (next.length !== 1 || next[0].kind !== "server" || next[0].role !== "worker") {
+        throw new Error(`${node.label}: connect the stream to one server with the Worker role. That server is the consumer group's worker pool.`);
+      }
     } else if (node.kind === "cache") {
       if (next.length !== 1 || next[0].kind !== "database") {
         throw new Error(`${node.label}: connect the cache to exactly one database for misses and writes.`);
@@ -212,13 +248,13 @@ export function validateSimulation(architecture: Architecture, workload: Workloa
         throw new Error(`${node.label}: call at most ${LIMITS.dependencies} dependencies from one server.`);
       }
       if (next.some((child) => !dependencyTargets.includes(child.kind) || (child.kind === "server" && child.role === "worker"))) {
-        throw new Error(`${node.label}: a server may call caches, databases, queues, rate limiters or other application servers.`);
+        throw new Error(`${node.label}: a server may call caches, databases, object stores, queues, streams, rate limiters or other application servers.`);
       }
-      if (node.role === "worker" && parents.some((parent) => parent.kind !== "queue")) {
-        throw new Error(`${node.label}: a worker must receive jobs from a queue.`);
+      if (node.role === "worker" && parents.some((parent) => !workerSources.includes(parent.kind))) {
+        throw new Error(`${node.label}: a worker must receive jobs from a queue or a stream.`);
       }
-      if (node.role !== "worker" && parents.some((parent) => parent.kind === "queue")) {
-        throw new Error(`${node.label}: give a server fed by a queue the Worker role.`);
+      if (node.role !== "worker" && parents.some((parent) => workerSources.includes(parent.kind))) {
+        throw new Error(`${node.label}: give a server fed by a queue or a stream the Worker role.`);
       }
     }
   }
@@ -249,6 +285,12 @@ export function validateSimulation(architecture: Architecture, workload: Workloa
   if (!Number.isFinite(settings.deadlineMs) || settings.deadlineMs < 100 || settings.deadlineMs > 60000) {
     throw new Error("The request deadline must be between 100 and 60,000 ms.");
   }
+  if (!Number.isFinite(settings.payloadKb) || settings.payloadKb < 1 || settings.payloadKb > LIMITS.payloadKb) {
+    throw new Error(`The object payload must be between 1 and ${LIMITS.payloadKb.toLocaleString("en-US")} KB.`);
+  }
+  if (!Number.isFinite(settings.objectShare) || settings.objectShare < 0 || settings.objectShare > 1) {
+    throw new Error("The share of requests that read or write an object must be between 0 and 100%.");
+  }
   if (!Array.isArray(settings.regions) || !settings.regions.length) throw new Error("Give the traffic at least one origin region.");
   if (settings.regions.some((region) => !region.name || !Number.isFinite(region.share) || region.share <= 0)) {
     throw new Error("Every traffic region needs a name and a share above zero.");
@@ -278,6 +320,12 @@ export function validateSimulation(architecture: Architecture, workload: Workloa
     }
     if (failure.kind === "region" && !failure.region) {
       throw new Error("A region outage needs the name of the region to take down.");
+    }
+    if (failure.kind === "partition" && !nodes.some((node) => node.kind === "database" && node.enabled && normalizeNode(node).dbMode === "leader-follower")) {
+      throw new Error("A network partition splits the replicas of a leader-follower database. Add one before scheduling it.");
+    }
+    if (failure.kind === "slow-partition" && !nodes.some((node) => node.kind === "stream" && node.enabled)) {
+      throw new Error("A slow partition needs an enabled stream: it slows one partition's consumer, not the whole design.");
     }
   }
 }

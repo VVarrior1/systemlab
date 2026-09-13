@@ -348,6 +348,90 @@ export const techCatalog: TechOption[] = [
     avoid: ["global"],
     note: "A counter kept in application memory costs nothing extra and adds no latency, but each replica enforces its own limit so the effective global limit scales with replica count.",
   },
+
+  // object-store
+  {
+    id: "s3",
+    name: "Amazon S3",
+    kind: "object-store",
+    fits: ["large-objects", "global", "cost-sensitive"],
+    avoid: ["low-latency"],
+    note: "Eleven-nines durability and the deepest ecosystem of integrations for blob storage, but per-request pricing and typical tens-of-ms latency make it a poor fit for the hot request path.",
+  },
+  {
+    id: "gcs",
+    name: "Google Cloud Storage",
+    kind: "object-store",
+    fits: ["large-objects", "global", "cost-sensitive"],
+    avoid: ["low-latency"],
+    note: "Strong consistency on every operation and tight BigQuery/GCP integration, but cross-region egress and per-operation costs add up the same way S3's do.",
+  },
+  {
+    id: "cloudflare-r2",
+    name: "Cloudflare R2",
+    kind: "object-store",
+    fits: ["large-objects", "cost-sensitive"],
+    avoid: ["low-latency"],
+    note: "S3-compatible API with zero egress fees, which is the whole pitch for an egress-heavy media workload, but the feature set (lifecycle rules, replication) is thinner than S3's.",
+  },
+  {
+    id: "azure-blob",
+    name: "Azure Blob Storage",
+    kind: "object-store",
+    fits: ["large-objects", "global", "cost-sensitive"],
+    avoid: ["low-latency"],
+    note: "Tiered storage classes (hot/cool/archive) let you trade retrieval latency for lower storage cost, but moving between tiers and regions both carry their own fees to track.",
+  },
+  {
+    id: "minio",
+    name: "MinIO",
+    kind: "object-store",
+    fits: ["cost-sensitive", "low-latency"],
+    avoid: ["global"],
+    note: "Self-hosted, S3-compatible object storage keeps data and latency local with no per-request billing, but you own the drives, erasure coding, and capacity planning yourself.",
+  },
+
+  // stream
+  {
+    id: "kafka-stream",
+    name: "Kafka",
+    kind: "stream",
+    fits: ["streaming", "write-heavy", "analytics"],
+    avoid: ["cost-sensitive"],
+    note: "The de facto standard partitioned log with a huge ecosystem of connectors and stream processors, but running brokers, ZooKeeper/KRaft, and partition rebalancing is real operational weight.",
+  },
+  {
+    id: "kinesis",
+    name: "Amazon Kinesis",
+    kind: "stream",
+    fits: ["streaming", "global", "cost-sensitive"],
+    avoid: ["hot-keys"],
+    note: "Fully managed shards with no brokers to run, but shard limits are fixed (1 MB/s or 1,000 records/s in) so a skewed key can throttle its shard well before the stream's total capacity is used.",
+  },
+  {
+    id: "pulsar",
+    name: "Apache Pulsar",
+    kind: "stream",
+    fits: ["streaming", "global", "write-heavy"],
+    avoid: ["cost-sensitive"],
+    note: "Separates serving from storage (BookKeeper) so partitions rebalance without moving data, and multi-tenant namespaces suit multi-region deployments, but it is a second distributed system's worth of operational surface beyond Kafka's.",
+  },
+  {
+    id: "redpanda",
+    name: "Redpanda",
+    kind: "stream",
+    fits: ["streaming", "low-latency", "write-heavy"],
+    avoid: ["cost-sensitive"],
+    note: "Kafka-API-compatible but written in C++ with no JVM or ZooKeeper, giving lower tail latency per broker, but the ecosystem of third-party tooling is younger than Kafka's.",
+  },
+  {
+    id: "pubsub-stream",
+    name: "Google Pub/Sub",
+    kind: "stream",
+    fits: ["streaming", "global", "cost-sensitive"],
+    avoid: ["hot-keys"],
+    note: "Fully managed with no partition management at all, but that also means no per-partition ordering guarantee unless you opt into ordering keys, which then behave like a hot key limit.",
+  },
 ];
 
 /** Derives the workload traits relevant to technology selection from a lesson's workload and architecture. */
@@ -382,6 +466,8 @@ export function workloadTraits(workload: Workload, architecture: Architecture): 
   if (hasQueue) traits.add("streaming");
 
   if (architecture.nodes.some((node) => node.kind === "cdn" && node.enabled)) traits.add("large-objects");
+  if (architecture.nodes.some((node) => node.kind === "object-store" && node.enabled)) traits.add("large-objects");
+  if (architecture.nodes.some((node) => node.kind === "stream" && node.enabled)) traits.add("streaming");
 
   const totalCost = architecture.nodes.filter((node) => node.enabled).reduce((sum, node) => sum + node.cost, 0);
   if (totalCost > 0 && totalCost <= 200) traits.add("cost-sensitive");

@@ -18,6 +18,7 @@ const reviewReasonLabels: Record<ReviewReason, string> = {
   "weak-concept": "Rubric gaps to revisit",
   "spaced-review": "Due for spaced review",
   "blank-canvas-next": "Try it from a blank canvas",
+  "mock-next": "Ready for a mock interview",
 };
 
 function KindBadge({ kind }: { kind: LessonKind }) {
@@ -31,7 +32,7 @@ function DesignPreview({ design }: { design: SavedDesign }) {
   const minY = Math.min(...nodes.map((n) => n.position.y));
   const width = Math.max(...nodes.map((n) => n.position.x)) - minX + 180;
   const height = Math.max(...nodes.map((n) => n.position.y)) - minY + 85;
-  const colors = { traffic: "#87939c", server: "#669ad1", database: "#d2a05e", cache: "#5baa8b", "load-balancer": "#8589c1", queue: "#c88799", cdn: "#4fa8a0", "rate-limiter": "#c9975a" };
+  const colors = { traffic: "#87939c", server: "#669ad1", database: "#d2a05e", cache: "#5baa8b", "load-balancer": "#8589c1", queue: "#c88799", cdn: "#4fa8a0", "rate-limiter": "#c9975a", "object-store": "#a97c50", stream: "#6badbf" };
   return <svg className="design-preview" viewBox={`${minX - 40} ${minY - 70} ${width + 80} ${height + 140}`} role="img" aria-label={`${design.name} architecture with ${nodes.length} components`}><defs><pattern id={`dots-${design.id}`} width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#d9e1e4" /></pattern></defs><rect x={minX - 40} y={minY - 70} width={width + 80} height={height + 140} fill={`url(#dots-${design.id})`} />{edges.map((edge) => { const a = nodes.find((n) => n.id === edge.source); const b = nodes.find((n) => n.id === edge.target); if (!a || !b) return null; return <path key={edge.id} d={`M ${a.position.x + 170} ${a.position.y + 40} C ${a.position.x + 230} ${a.position.y + 40}, ${b.position.x - 60} ${b.position.y + 40}, ${b.position.x} ${b.position.y + 40}`} fill="none" stroke="#adbdc3" strokeWidth="3" />; })}{nodes.map((node) => <g key={node.id}><rect x={node.position.x} y={node.position.y} width="170" height="80" rx="5" fill="white" stroke={colors[node.kind]} strokeWidth="2" /><rect x={node.position.x + 15} y={node.position.y + 20} width="32" height="32" rx="5" fill={colors[node.kind]} opacity="0.25" /><text x={node.position.x + 58} y={node.position.y + 38} fontSize="12" fill="#4c5963">{node.label.slice(0, 15)}</text><text x={node.position.x + 58} y={node.position.y + 56} fontSize="10" fill="#94a0a8">{node.capacity} req/s x {node.replicas}</text></g>)}</svg>;
 }
 

@@ -32,7 +32,7 @@ export function remixLesson(lesson: Lesson, remixSeed: number): RemixedLesson {
 
   const reference = structuredClone(lesson.reference);
   for (const node of reference.nodes) {
-    if (node.kind === "server" || node.kind === "database") {
+    if (node.kind === "server" || node.kind === "database" || node.kind === "object-store" || node.kind === "stream") {
       node.capacity = roundTo10(node.capacity * factor);
     } else if (node.kind === "rate-limiter") {
       if (node.limit !== undefined) node.limit = Math.max(1, Math.round(node.limit * factor));
@@ -43,7 +43,7 @@ export function remixLesson(lesson: Lesson, remixSeed: number): RemixedLesson {
   return { workload, factor, readShift, reference };
 }
 
-type ScaledObjectiveMetric = "maxQueueDepth" | "staleReadRate" | "rejectedRate" | "duplicateRate" | "deadLetterRate" | "lostWrites";
+type ScaledObjectiveMetric = "maxQueueDepth" | "staleReadRate" | "rejectedRate" | "duplicateRate" | "deadLetterRate" | "lostWrites" | "conflictingWrites" | "egressGb";
 
 const labelFor = (metric: ScaledObjectiveMetric, target: number): string => {
   if (metric === "maxQueueDepth") return `Peak queue depth at most ${target}`;
@@ -51,6 +51,8 @@ const labelFor = (metric: ScaledObjectiveMetric, target: number): string => {
   if (metric === "rejectedRate") return `Rejected rate at most ${Math.round(target * 1000) / 10}%`;
   if (metric === "duplicateRate") return `Duplicate deliveries at most ${Math.round(target * 1000) / 10}%`;
   if (metric === "deadLetterRate") return `Dead-lettered jobs at most ${Math.round(target * 1000) / 10}%`;
+  if (metric === "conflictingWrites") return `Conflicting writes at most ${target}`;
+  if (metric === "egressGb") return `Egress at most ${target} GB`;
   return `Lost writes at most ${target}`;
 };
 
@@ -85,11 +87,13 @@ export function deriveRemixObjectives(lesson: Lesson, workload: Workload, refere
     { id: "cost", label: `Infrastructure cost at most ${costTarget} credits`, metric: "cost", operator: "lte", target: costTarget },
   ];
 
-  for (const metric of ["maxQueueDepth", "staleReadRate", "rejectedRate", "duplicateRate", "deadLetterRate", "lostWrites"] as const) {
+  for (const metric of ["maxQueueDepth", "staleReadRate", "rejectedRate", "duplicateRate", "deadLetterRate", "lostWrites", "conflictingWrites", "egressGb"] as const) {
     if (!lesson.objectives.some((objective) => objective.metric === metric)) continue;
     const worst = Math.max(...referenceResults.map((result) => result[metric] as number));
     const target = metric === "maxQueueDepth" ? Math.round(worst * 1.5)
       : metric === "lostWrites" ? worst + 2
+      : metric === "conflictingWrites" ? worst + 1
+      : metric === "egressGb" ? worst * 1.3
       : worst * 1.5;
     objectives.push({ id: metric, label: labelFor(metric, target), metric, operator: "lte", target });
   }

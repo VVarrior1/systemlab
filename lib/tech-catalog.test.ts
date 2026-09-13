@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fitScore, suggestFor, techCatalog, workloadTraits, type Trait } from "./tech-catalog";
 import type { Architecture, NodeKind, Workload } from "./types";
 
-const kinds: NodeKind[] = ["server", "load-balancer", "database", "cache", "queue", "cdn", "rate-limiter"];
+const kinds: NodeKind[] = ["server", "load-balancer", "database", "cache", "queue", "cdn", "rate-limiter", "object-store", "stream"];
 
 function makeWorkload(overrides: Partial<Workload> = {}): Workload {
   return {
@@ -114,6 +114,26 @@ describe("workloadTraits", () => {
     const traits = workloadTraits(makeWorkload({ deadlineMs: 100 }), makeArchitecture());
     expect(traits).toContain("low-latency");
   });
+
+  it("derives large-objects from the presence of an object store", () => {
+    const architecture = makeArchitecture({
+      nodes: [
+        { id: "o1", kind: "object-store", label: "Store", position: { x: 0, y: 0 }, capacity: 3000, latency: 40, replicas: 1, cacheHitRate: 0, enabled: true, cost: 10 },
+      ],
+    });
+    const traits = workloadTraits(makeWorkload(), architecture);
+    expect(traits).toContain("large-objects");
+  });
+
+  it("derives streaming from the presence of a stream node", () => {
+    const architecture = makeArchitecture({
+      nodes: [
+        { id: "s1", kind: "stream", label: "Stream", position: { x: 0, y: 0 }, capacity: 20000, latency: 2, replicas: 1, cacheHitRate: 0, enabled: true, cost: 10 },
+      ],
+    });
+    const traits = workloadTraits(makeWorkload(), architecture);
+    expect(traits).toContain("streaming");
+  });
 });
 
 describe("fitScore", () => {
@@ -168,6 +188,24 @@ describe("suggestFor", () => {
       const ranked = suggestFor(kind, ["read-heavy"]);
       expect(ranked.every((option) => option.kind === kind)).toBe(true);
     }
+  });
+
+  it("ranks Cloudflare R2 and MinIO above S3 for cost-sensitive, low-latency object storage", () => {
+    const ranked = suggestFor("object-store", ["cost-sensitive", "low-latency"]);
+    const r2Index = ranked.findIndex((option) => option.id === "cloudflare-r2");
+    const s3Index = ranked.findIndex((option) => option.id === "s3");
+    expect(r2Index).toBeGreaterThanOrEqual(0);
+    expect(s3Index).toBeGreaterThanOrEqual(0);
+    expect(r2Index).toBeLessThan(s3Index);
+  });
+
+  it("ranks Redpanda above Kafka for a low-latency streaming workload", () => {
+    const ranked = suggestFor("stream", ["streaming", "low-latency"]);
+    const redpandaIndex = ranked.findIndex((option) => option.id === "redpanda");
+    const kafkaIndex = ranked.findIndex((option) => option.id === "kafka-stream");
+    expect(redpandaIndex).toBeGreaterThanOrEqual(0);
+    expect(kafkaIndex).toBeGreaterThanOrEqual(0);
+    expect(redpandaIndex).toBeLessThan(kafkaIndex);
   });
 
   it("sorts strictly by descending fit score", () => {

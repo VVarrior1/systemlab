@@ -19,6 +19,8 @@ export const costRates: Record<Exclude<NodeKind, "traffic">, { base: number; cap
 
 /** v2.3: storage is billed per GB kept (month-equivalent, scaled to the hour), egress per GB served. */
 export const storageRates = { storageGbMonth: 0.02, egressGb: 0.09 };
+/** A month of storage, priced for one hour of it. 730 = 365 x 24 / 12. */
+export const HOURS_PER_MONTH = 730;
 
 /**
  * Cost 2.1: usage on top of the provisioned bill, in credits per 1,000 operations per hour.
@@ -55,10 +57,24 @@ export interface UsageCounts {
   "rate-limiter"?: number;
   /** Hops that crossed a region boundary. */
   crossRegion?: number;
+  /** v2.3: GB an object store keeps. Billed as one hour of the monthly storage rate, not per operation. */
+  storedGb?: number;
+  /** v2.3: GB served to the outside world, already extrapolated to an hour. */
+  egressGb?: number;
 }
 
 const round = (value: number) => Math.round(value * 1000) / 1000;
 const per1000 = (operations: number | undefined, rate: number) => (Math.max(0, operations ?? 0) / 1000) * rate;
+
+/** One hour of keeping `storedGb` GB. The monthly rate divided by the hours in a month. */
+export function storageCostFor(storedGb: number | undefined): number {
+  return round((Math.max(0, storedGb ?? 0) * storageRates.storageGbMonth) / HOURS_PER_MONTH);
+}
+
+/** One hour of serving `egressGb` GB out of the system. Bytes served are billed once, wherever they leave. */
+export function egressCostFor(egressGb: number | undefined): number {
+  return round(Math.max(0, egressGb ?? 0) * storageRates.egressGb);
+}
 
 /** Cost of one replica of a component. Traffic sources are free. */
 export function componentCost(node: Pick<SystemNode, "kind" | "capacity">): number {
@@ -93,6 +109,8 @@ export function usageCost(counts: UsageCounts): number {
     per1000(counts.cdn, usageRates.cdn) +
     per1000(counts.queue, usageRates.queue) +
     per1000(counts["rate-limiter"], usageRates["rate-limiter"]) +
-    per1000(counts.crossRegion, usageRates.crossRegion);
+    per1000(counts.crossRegion, usageRates.crossRegion) +
+    (Math.max(0, counts.storedGb ?? 0) * storageRates.storageGbMonth) / HOURS_PER_MONTH +
+    Math.max(0, counts.egressGb ?? 0) * storageRates.egressGb;
   return round(total);
 }

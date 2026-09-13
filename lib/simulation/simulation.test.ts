@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Architecture, NodeKind, SimulationResult, SystemNode, Workload } from "../types";
 import { lessons } from "../curriculum";
-import { ENGINE_VERSION, REQUEST_DEADLINE_MS, runSimulation, validateSimulation } from "./index";
+import { HOURS_PER_MONTH, storageRates } from "../cost";
+import { ENGINE_VERSION, REQUEST_DEADLINE_MS, runSimulation, streamProbe, validateSimulation } from "./index";
 import { lognormalMultiplier, powerLawKey, createRandom } from "./distributions";
 import { KeyedCache } from "./cache";
 
@@ -83,8 +84,8 @@ describe("deterministic simulation", () => {
     const first = runSimulation(architecture, workload);
     expect(runSimulation(architecture, workload)).toEqual(first);
     expect(architecture).toEqual(original);
-    expect(first.engineVersion).toBe("2.1.0");
-    expect(ENGINE_VERSION).toBe("2.1.0");
+    expect(first.engineVersion).toBe("2.3.0");
+    expect(ENGINE_VERSION).toBe("2.3.0");
     expect(first.requestCount).toBe(1000);
     expect(first.completed).toBe(1000);
     expect(first.failed).toBe(0);
@@ -1341,6 +1342,308 @@ describe("usage cost", () => {
     const idle = runSimulation(shape(), { ...workload, requestRate: 1, duration: 1 });
     expect(idle.usageCost).toBeLessThan(idle.provisionedCost * 0.05);
     expect(idle.cost).toBeGreaterThan(idle.provisionedCost);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// v2.3 - object stores: transfer time, egress and storage
+// ---------------------------------------------------------------------------------------------
+
+/** A store with enough lanes that the payload, not a queue behind one lane, is what costs time. */
+const objectStack = (store: Partial<SystemNode> = {}) =>
+  graph(
+    [
+      node("traffic", "traffic"),
+      node("api", "server", { capacity: 4000, latency: 1 }),
+      node("store", "object-store", { capacity: 3000, latency: 5, replicas: 4, storedGb: 200, ...store }),
+    ],
+    [["traffic", "api"], ["api", "store"]],
+  );
+const objectWorkload: Workload = { ...workload, requestRate: 20, duration: 10, readRatio: 1 };
+/** Traffic that is all objects, served mostly from the edge: the shape where bytes outweigh compute. */
+const mediaStack = () =>
+  graph(
+    [
+      node("traffic", "traffic"),
+      node("edge", "cdn", { capacity: 8000, latency: 2, cacheHitRate: 0.9 }),
+      node("api", "server", { capacity: 400, latency: 2 }),
+      node("store", "object-store", { capacity: 3000, latency: 5, replicas: 6, storedGb: 500 }),
+    ],
+    [["traffic", "edge"], ["edge", "api"], ["api", "store"]],
+  );
+const mediaWorkload: Workload = { ...workload, requestRate: 100, duration: 10, readRatio: 1, objectShare: 1 };
+
+describe("object stores, egress and storage", () => {
+  it("charges an object request for moving its bytes and leaves a small request alone", () => {
+    const none = runSimulation(objectStack(), { ...objectWorkload, objectShare: 0 });
+    const objects = runSimulation(objectStack(), { ...objectWorkload, objectShare: 1, payloadKb: 2048 });
+    // 2,048 KB down a 12,500 KB/s lane is 163.8 ms of transfer on top of the store's own service time.
+    expect(objects.p50 - none.p50).toBeGreaterThan(155);
+    expect(objects.p50 - none.p50).toBeLessThan(175);
+    expect(none.p50).toBeLessThan(15);
+    // Bytes hold the lane, so the same request rate leaves the store hundreds of times busier.
+    expect(metric(none, "store").utilization).toBeLessThan(0.02);
+    expect(metric(objects, "store").utilization).toBeGreaterThan(0.6);
+    // A megabyte costs half of what two megabytes cost, in time as well as in money.
+    const halfSize = runSimulation(objectStack(), { ...objectWorkload, objectShare: 1, payloadKb: 1024 });
+    expect(halfSize.p50 - none.p50).toBeGreaterThan((objects.p50 - none.p50) * 0.45);
+    expect(halfSize.p50 - none.p50).toBeLessThan((objects.p50 - none.p50) * 0.55);
+  });
+
+  it("scales egress with objectShare x payloadKb and prices it per GB served", () => {
+    const full = runSimulation(objectStack(), { ...objectWorkload, objectShare: 1, payloadKb: 2048 });
+    const half = runSimulation(objectStack(), { ...objectWorkload, objectShare: 0.5, payloadKb: 2048 });
+    const small = runSimulation(objectStack(), { ...objectWorkload, objectShare: 1, payloadKb: 1024 });
+    const none = runSimulation(objectStack(), { ...objectWorkload, objectShare: 0, payloadKb: 2048 });
+    // 20 reads/s x 3,600 x 2,048 KB = 140.6 GB an hour, and every one of them is measured, not assumed.
+    expect(full.egressGb).toBeCloseTo((objectWorkload.requestRate * 3600 * 2048) / 1048576, 1);
+    expect(half.egressGb / full.egressGb).toBeGreaterThan(0.42);
+    expect(half.egressGb / full.egressGb).toBeLessThan(0.58);
+    expect(small.egressGb / full.egressGb).toBeGreaterThan(0.47);
+    expect(small.egressGb / full.egressGb).toBeLessThan(0.53);
+    expect(none.egressGb).toBe(0);
+    expect(none.egressCost).toBe(0);
+    for (const result of [full, half, small]) expect(result.egressCost).toBeCloseTo(result.egressGb * storageRates.egressGb, 2);
+  });
+
+  it("bills storage for every GB kept even when nothing reads it", () => {
+    const idle = runSimulation(objectStack({ storedGb: 4000 }), { ...objectWorkload, requestRate: 1, duration: 2, objectShare: 0 });
+    expect(idle.egressGb).toBe(0);
+    expect(idle.storageCost).toBeCloseTo((4000 * storageRates.storageGbMonth) / HOURS_PER_MONTH, 3);
+    expect(idle.storageCost).toBeGreaterThan(0);
+    expect(idle.costBreakdown.find((row) => row.nodeId === "store")!.usage).toBeCloseTo(idle.storageCost, 3);
+    expect(titles(idle).some((title) => title.includes("Storage for 4,000 GB"))).toBe(true);
+  });
+
+  it("lets egress dominate the bill once the payloads are large", () => {
+    const media = runSimulation(mediaStack(), { ...mediaWorkload, payloadKb: 4096 });
+    const text = runSimulation(mediaStack(), { ...mediaWorkload, payloadKb: 8 });
+    expect(media.egressCost / media.cost).toBeGreaterThan(0.5);
+    expect(media.egressCost).toBeGreaterThan(media.provisionedCost * 3);
+    expect(text.egressCost / text.cost).toBeLessThan(0.1);
+    expect(media.egressCost / text.egressCost).toBeCloseTo(4096 / 8, 0);
+    // The edge serves most of the bytes, so the origin store never sees most of the egress.
+    expect(metric(media, "edge").processed).toBeGreaterThan(metric(media, "store").processed * 5);
+    const dominant = insight(media, "Egress is");
+    expect(dominant?.severity).toBe("critical");
+    expect(insight(text, "Egress is")?.severity).toBe("good");
+  });
+
+  it("adds the bill up: provisioned plus measured usage plus storage plus egress", () => {
+    const media = runSimulation(mediaStack(), { ...mediaWorkload, payloadKb: 4096 });
+    expect(media.cost).toBeCloseTo(media.provisionedCost + media.usageCost, 2);
+    const rows = media.costBreakdown;
+    const egressRow = rows.find((row) => row.nodeId === "egress")!;
+    expect(egressRow.usage).toBeCloseTo(media.egressCost, 3);
+    const operations = rows.filter((row) => row.nodeId !== "egress" && row.nodeId !== "store").reduce((sum, row) => sum + row.usage!, 0);
+    expect(media.usageCost).toBeCloseTo(operations + media.storageCost + media.egressCost, 2);
+    expect(rows.reduce((sum, row) => sum + row.cost + row.usage!, 0)).toBeCloseTo(media.cost, 2);
+    expect(media.storageCost).toBeCloseTo((500 * storageRates.storageGbMonth) / HOURS_PER_MONTH, 3);
+    expect(media.egressCost).toBeCloseTo(media.egressGb * storageRates.egressGb, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// v2.3 - partitioned streams
+// ---------------------------------------------------------------------------------------------
+
+const streamStack = (stream: Partial<SystemNode> = {}, worker: Partial<SystemNode> = {}) =>
+  graph(
+    [
+      node("traffic", "traffic"),
+      node("api", "server", { capacity: 4000, latency: 1 }),
+      node("log", "stream", { capacity: 20000, latency: 1, partitions: 4, consumerGroups: 1, ...stream }),
+      node("w", "server", { role: "worker", capacity: 400, latency: 1, replicas: 4, ...worker }),
+    ],
+    [["traffic", "api"], ["api", "log"], ["log", "w"]],
+  );
+/** Runs with the delivery probe armed and always disarms it, so one failure cannot leak into the next test. */
+function withStreamProbe(architecture: Architecture, plan: Workload) {
+  streamProbe.records = [];
+  try {
+    const result = runSimulation(architecture, plan);
+    return { result, records: streamProbe.records! };
+  } finally {
+    streamProbe.records = null;
+  }
+}
+
+describe("partitioned streams", () => {
+  it("keeps each partition in order on a single replica per consumer group", () => {
+    const { result, records } = withStreamProbe(streamStack({ partitions: 4, consumerGroups: 2 }, { replicas: 2 }), {
+      ...workload,
+      requestRate: 60,
+      keySpace: 200,
+    });
+    expect(result.failed).toBe(0);
+    expect(records.length).toBe(result.completed * 2);
+    const lanes = new Map<string, Set<number>>();
+    const order = new Map<string, number[]>();
+    for (const record of records) {
+      const key = `${record.group}:${record.partition}`;
+      if (!lanes.has(key)) lanes.set(key, new Set());
+      if (!order.has(key)) order.set(key, []);
+      lanes.get(key)!.add(record.replica);
+      order.get(key)!.push(record.requestId);
+    }
+    expect(lanes.size).toBe(8);
+    for (const [key, ids] of order) {
+      // A partition is a FIFO lane: its messages leave in the order they arrived, one at a time.
+      expect(ids, `${key} is out of order`).toEqual([...ids].sort((a, b) => a - b));
+      expect(ids.length).toBeGreaterThan(20);
+      expect(lanes.get(key)!.size, `${key} was consumed by more than one replica`).toBe(1);
+    }
+    // Both replicas do work, and a group's partitions are spread across them.
+    expect(new Set(records.map((record) => record.replica)).size).toBe(2);
+  });
+
+  it("multiplies consumer work by the number of consumer groups", () => {
+    const plan: Workload = { ...workload, requestRate: 60 };
+    const one = runSimulation(streamStack({ consumerGroups: 1 }, { capacity: 600, replicas: 2 }), plan);
+    const three = runSimulation(streamStack({ consumerGroups: 3 }, { capacity: 600, replicas: 2 }), plan);
+    expect(one.failed + three.failed).toBe(0);
+    expect(metric(three, "w").processed).toBe(metric(one, "w").processed * 3);
+    expect(metric(three, "log").processed).toBe(metric(one, "log").processed);
+    // Three readers of the same log is three times the delivery bill, not three times the messages.
+    const usage = (result: SimulationResult) => result.costBreakdown.find((row) => row.nodeId === "log")!.usage!;
+    expect(usage(three)).toBeCloseTo(usage(one) * 3, 3);
+    expect(titles(three).some((title) => title.includes("fans every message out to 3 consumer groups"))).toBe(true);
+    expect(titles(one).some((title) => title.includes("consumer groups"))).toBe(false);
+  });
+
+  it("backs up only the partition whose consumer slowed down", () => {
+    const plan: Workload = { ...workload, requestRate: 100 };
+    const healthy = runSimulation(streamStack(), plan);
+    const { result, records } = withStreamProbe(streamStack(), {
+      ...plan,
+      failures: [{ kind: "slow-partition", at: 0.3, duration: 4, factor: 20 }],
+    });
+    const waits = new Map<number, number[]>();
+    for (const record of records) {
+      if (!waits.has(record.partition)) waits.set(record.partition, []);
+      waits.get(record.partition)!.push(record.waitMs);
+    }
+    const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+    expect(waits.size).toBe(4);
+    expect(mean(waits.get(0)!)).toBeGreaterThan(100);
+    for (const partition of [1, 2, 3]) {
+      expect(mean(waits.get(partition)!), `partition ${partition} backed up too`).toBeLessThan(5);
+      expect(waits.get(partition)!.length).toBeGreaterThan(100);
+    }
+    // The backlog is real - the run's tail blows out - but it is one lane's backlog, not the system's.
+    expect(result.p95).toBeGreaterThan(healthy.p95 * 10);
+    expect(result.failed).toBe(0);
+    expect(insight(result, "partition 0 waits")?.severity).toBe("critical");
+  });
+
+  it("replays a parked partition when the consumer returns, duplicating work unless it is idempotent", () => {
+    const plan = (failures: Workload["failures"]): Workload => ({ ...workload, requestRate: 100, failures });
+    const stack = (idempotent: boolean) => streamStack({ partitions: 4 }, { capacity: 200, replicas: 2, idempotent });
+    const oneDeath: Workload["failures"] = [{ kind: "server", at: 0.3, duration: 3, target: "w" }];
+    const flapping: Workload["failures"] = [{ kind: "flapping", at: 0.2, duration: 5, target: "w", intervalMs: 600 }];
+    const replayed = runSimulation(stack(false), plan(oneDeath));
+    const deduped = runSimulation(stack(true), plan(oneDeath));
+    const flapped = runSimulation(stack(false), plan(flapping));
+    expect(replayed.duplicates).toBeGreaterThanOrEqual(1);
+    expect(replayed.duplicateRate).toBeGreaterThan(0);
+    // Every death replays the message the dead replica had started, so more deaths mean more duplicates.
+    expect(flapped.duplicates).toBeGreaterThan(replayed.duplicates);
+    // An idempotent consumer still receives the replay; it just refuses to do the work twice.
+    expect(deduped.duplicates).toBe(0);
+    expect(deduped.completed).toBe(replayed.completed);
+    // The log never drops the parked messages: nothing is lost while the consumer is away.
+    expect(replayed.completed).toBe(replayed.requestCount);
+    expect(replayed.events.some((event) => event.title.includes("replayed partition"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// v2.3 - leader election under a network partition
+// ---------------------------------------------------------------------------------------------
+
+const electionStack = (election: "heartbeat" | "consensus") =>
+  graph(
+    [
+      node("traffic", "traffic"),
+      node("api", "server", { capacity: 4000, latency: 1 }),
+      node("db", "database", { capacity: 4000, latency: 2, dbMode: "leader-follower", replicas: 3, election, electionMs: 1000 }),
+    ],
+    [["traffic", "api"], ["api", "db"]],
+  );
+const splitWorkload: Workload = { ...workload, requestRate: 200, readRatio: 0.5, failures: [{ kind: "partition", at: 0.3, duration: 4 }] };
+
+describe("leader election under a network partition", () => {
+  it("elects two leaders with heartbeats and throws the minority's writes away when the split heals", () => {
+    const result = runSimulation(electionStack("heartbeat"), splitWorkload);
+    const quiet = runSimulation(electionStack("heartbeat"), { ...splitWorkload, failures: [] });
+    expect(quiet.conflictingWrites).toBe(0);
+    expect(result.conflictingWrites).toBeGreaterThan(50);
+    // The isolated side keeps answering, so most of its clients never see an error...
+    expect(result.errorRate).toBeLessThan(0.05);
+    // ...and every write it acknowledged is discarded on the merge, which is what makes it dangerous.
+    expect(result.lostWrites).toBeGreaterThanOrEqual(result.conflictingWrites);
+    expect(insight(result, "accepted by a second leader")?.severity).toBe("critical");
+    expect(result.events.some((event) => event.title.includes("discarded"))).toBe(true);
+  });
+
+  it("keeps one leader with consensus by failing the writes it cannot commit", () => {
+    const heartbeat = runSimulation(electionStack("heartbeat"), splitWorkload);
+    const consensus = runSimulation(electionStack("consensus"), splitWorkload);
+    expect(consensus.conflictingWrites).toBe(0);
+    expect(consensus.lostWrites).toBe(0);
+    // The same writes exist in both runs: consensus turns them into errors instead of into lost data.
+    expect(consensus.failed - heartbeat.failed).toBeGreaterThan(heartbeat.conflictingWrites * 0.7);
+    expect(consensus.errorRate).toBeGreaterThan(heartbeat.errorRate * 2);
+    expect(insight(consensus, "refused")?.severity).toBe("good");
+    expect(insight(consensus, "accepted by a second leader")).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// v2.3 - validation of the new kinds
+// ---------------------------------------------------------------------------------------------
+
+describe("v2.3 validation", () => {
+  it("lets a server call an object store and ends the route there", () => {
+    expect(() => runSimulation(objectStack(), { ...objectWorkload, objectShare: 1 })).not.toThrow();
+    const onwards = objectStack();
+    onwards.nodes.push(node("db", "database"));
+    onwards.edges.push({ id: "x", source: "store", target: "db" });
+    expect(() => runSimulation(onwards, objectWorkload)).toThrow(/object stores are the end/);
+  });
+
+  it("requires a stream to feed exactly one worker", () => {
+    expect(() => runSimulation(streamStack(), workload)).not.toThrow();
+    const application = streamStack({}, { role: "application" });
+    expect(() => runSimulation(application, workload)).toThrow(/Worker role/);
+    const twoWorkers = streamStack();
+    twoWorkers.nodes.push(node("w2", "server", { role: "worker" }));
+    twoWorkers.edges.push({ id: "x", source: "log", target: "w2" });
+    expect(() => runSimulation(twoWorkers, workload)).toThrow(/one server with the Worker role/);
+  });
+
+  it("bounds the new fields with a message that says what the field is for", () => {
+    expect(() => runSimulation(streamStack({ partitions: 0 }), workload)).toThrow(/between 1 and 64 partitions/);
+    expect(() => runSimulation(streamStack({ consumerGroups: 99 }), workload)).toThrow(/consumer groups/);
+    expect(() => runSimulation(streamStack({ retentionSeconds: -1 }), workload)).toThrow(/retention/);
+    expect(() => runSimulation(objectStack({ storedGb: -5 }), objectWorkload)).toThrow(/GB\. You pay for every GB kept/);
+    expect(() => runSimulation(electionStack("heartbeat"), { ...splitWorkload, failures: [] })).not.toThrow();
+    expect(() => runSimulation(objectStack(), { ...objectWorkload, objectShare: 1.5 })).toThrow(/between 0 and 100%/);
+    expect(() => runSimulation(objectStack(), { ...objectWorkload, payloadKb: 0 })).toThrow(/payload must be between/);
+    const noLeader = basic();
+    expect(() => runSimulation(noLeader, { ...workload, failures: [{ kind: "partition", at: 0.5, duration: 2 }] })).toThrow(/leader-follower/);
+    expect(() => runSimulation(noLeader, { ...workload, failures: [{ kind: "slow-partition", at: 0.5, duration: 2 }] })).toThrow(/needs an enabled stream/);
+  });
+
+  it("tells the learner what the engine assumed about bytes, partitions and elections", () => {
+    const media = runSimulation(mediaStack(), { ...mediaWorkload, payloadKb: 4096 });
+    const text = media.assumptions.join(" ");
+    expect(text).toContain("12,500");
+    expect(text).toContain("egress");
+    expect(text).toContain("partitioned log");
+    expect(text).toContain("conflictingWrites");
+    expect(text).toContain("usageCost includes storage and egress");
+    expect(text).not.toContain("ignores data size");
   });
 });
 

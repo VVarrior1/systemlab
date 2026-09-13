@@ -1,7 +1,7 @@
 "use client";
 import { memo, useMemo, useState, type DragEvent } from "react";
 import { Background, BackgroundVariant, Controls, Handle, MarkerType, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type Connection, type NodeChange, type NodePositionChange } from "@xyflow/react";
-import { Activity, ArrowRight, Boxes, Copy, Database, Fingerprint, Gauge, Globe, Globe2, Layers3, Maximize, Network, Plus, Redo2, Repeat, RotateCcw, RotateCw, Server, ShieldAlert, Timer, Trash2, Undo2, Workflow, X, Zap } from "lucide-react";
+import { Activity, ArrowRight, Boxes, Copy, Database, Fingerprint, Gauge, Globe, Globe2, HardDrive, Layers3, Maximize, Network, Plus, Radio, Redo2, Repeat, RotateCcw, RotateCw, Server, ShieldAlert, Timer, Trash2, Undo2, Users, Waves, Workflow, X, Zap } from "lucide-react";
 import type { Architecture, NodeKind, NodeMetric, SimulationResult, SystemNode } from "@/lib/types";
 import { componentCatalog, createSystemNode, normalizeNode } from "@/lib/templates";
 import { componentCost, nodeCost } from "@/lib/cost";
@@ -9,8 +9,8 @@ import { LIMITS } from "@/lib/simulation/validate";
 import { useEditor } from "@/lib/editor-store";
 import { Tip } from "./ui";
 
-export const kindIcons = { traffic: Globe2, server: Server, "load-balancer": Network, database: Database, cache: Zap, queue: Layers3, cdn: Globe, "rate-limiter": Gauge };
-const kindLabels: Record<NodeKind, string> = { traffic: "TRAFFIC SOURCE", server: "APPLICATION", "load-balancer": "LOAD BALANCER", database: "DATABASE", cache: "CACHE", queue: "MESSAGE QUEUE", cdn: "CDN EDGE", "rate-limiter": "RATE LIMITER" };
+export const kindIcons = { traffic: Globe2, server: Server, "load-balancer": Network, database: Database, cache: Zap, queue: Layers3, cdn: Globe, "rate-limiter": Gauge, "object-store": HardDrive, stream: Waves };
+const kindLabels: Record<NodeKind, string> = { traffic: "TRAFFIC SOURCE", server: "APPLICATION", "load-balancer": "LOAD BALANCER", database: "DATABASE", cache: "CACHE", queue: "MESSAGE QUEUE", cdn: "CDN EDGE", "rate-limiter": "RATE LIMITER", "object-store": "OBJECT STORE", stream: "EVENT STREAM" };
 type FlowData = { system: SystemNode; metric?: NodeMetric; running: boolean; selected: boolean; requestRate: number; balanced: boolean };
 type FlowNode = Node<FlowData, "system">;
 
@@ -31,6 +31,8 @@ function specLine(node: SystemNode, settings: ReturnType<typeof normalizeNode>, 
     case "rate-limiter": return [`${settings.limit} req/s limit`, `${settings.burst} burst`];
     case "cdn": return [`${Math.round(node.cacheHitRate * 100)}% hit rate`, "edge cache"];
     case "queue": return [`${node.capacity} req/s`, settings.maxQueue > 0 ? `${settings.maxQueue} bound` : "unbounded"];
+    case "object-store": return ["S3-style", `${settings.storedGb.toLocaleString()} GB`];
+    case "stream": return [`${settings.partitions} partition${settings.partitions === 1 ? "" : "s"}`, `${settings.consumerGroups} group${settings.consumerGroups === 1 ? "" : "s"}`];
     default: return [`${node.capacity} req/s`, `${node.replicas} replicas`];
   }
 }
@@ -51,6 +53,12 @@ function queueBadges(settings: ReturnType<typeof normalizeNode>) {
   if (settings.ackMode === "at-least-once") badges.push({ icon: Repeat, label: `at-least-once, ${settings.maxDeliveries} deliveries` });
   return badges;
 }
+/** Database badges: a leader-follower database's election strategy is worth surfacing at a glance. */
+function databaseBadges(settings: ReturnType<typeof normalizeNode>) {
+  const badges: { icon: typeof Timer; label: string }[] = [];
+  if (settings.dbMode === "leader-follower") badges.push({ icon: settings.election === "consensus" ? Users : Radio, label: `${settings.election} election` });
+  return badges;
+}
 
 const SystemFlowNode = memo(function SystemFlowNode({ data }: NodeProps<FlowNode>) {
   const { system: node, metric } = data;
@@ -61,7 +69,7 @@ const SystemFlowNode = memo(function SystemFlowNode({ data }: NodeProps<FlowNode
   const directEndpointFailed = node.kind === "server" && node.role !== "worker" && !data.balanced && metric?.healthyReplicas !== undefined && metric.healthyReplicas < node.replicas;
   const offline = !node.enabled || metric?.healthyReplicas === 0 || directEndpointFailed;
   const [left, right] = specLine(node, settings, data.requestRate);
-  const badges = node.kind === "server" ? serverBadges(node, settings) : node.kind === "queue" ? queueBadges(settings) : [];
+  const badges = node.kind === "server" ? serverBadges(node, settings) : node.kind === "queue" ? queueBadges(settings) : node.kind === "database" ? databaseBadges(settings) : [];
   const regionTag = node.region && node.region !== "primary" ? node.region : null;
   return <div className={`system-node node-${node.kind} ${data.selected ? "node-selected" : ""} ${offline ? "node-disabled" : ""}`}>
     {node.kind !== "traffic" && <Handle type="target" position={Position.Left} className="node-handle" />}
@@ -79,9 +87,9 @@ const nodeTypes = { system: SystemFlowNode };
 
 /** What Connect-to should offer, per §the v2 routing rules in lib/simulation/validate.ts. */
 const entryKinds: NodeKind[] = ["server", "load-balancer", "cdn", "rate-limiter"];
-const dependencyKinds: NodeKind[] = ["cache", "database", "queue", "server", "rate-limiter"];
+const dependencyKinds: NodeKind[] = ["cache", "database", "queue", "server", "rate-limiter", "object-store"];
 function connectionOptions(selected: SystemNode, architecture: Architecture): { targets: SystemNode[]; limitNote?: string } | null {
-  if (selected.kind === "database") return null;
+  if (selected.kind === "database" || selected.kind === "object-store") return null;
   const outCount = architecture.edges.filter((e) => e.source === selected.id).length;
   const already = (id: string) => architecture.edges.some((e) => e.source === selected.id && e.target === id);
   const isEntry = (n: SystemNode) => entryKinds.includes(n.kind) && !(n.kind === "server" && n.role === "worker") && n.id !== selected.id;
@@ -95,7 +103,7 @@ function connectionOptions(selected: SystemNode, architecture: Architecture): { 
     if (outCount >= 1) return { targets: [], limitNote: "Already routes misses to one database." };
     return { targets: architecture.nodes.filter((n) => n.kind === "database") };
   }
-  if (selected.kind === "queue") {
+  if (selected.kind === "queue" || selected.kind === "stream") {
     if (outCount >= 1) return { targets: [], limitNote: "Already feeding one worker." };
     return { targets: architecture.nodes.filter((n) => n.kind === "server" && n.role === "worker") };
   }
@@ -114,6 +122,8 @@ function routingNote(selected: SystemNode, selectedBalanced: boolean | undefined
     case "server": return selected.role === "worker" ? "Queue consumer: replicas pull jobs from the connected queue and share its backlog." : selectedBalanced ? "Load-balancer connections route to individual healthy replicas. Direct connections still target replica 1." : "Direct endpoint: only replica 1 receives requests. No implicit load balancing or failover.";
     case "database": return "Idealized managed pool: equivalent read/write capacity and immediate failover. Not a primary/read-replica database model.";
     case "cache": return "Sits in front of exactly one database; misses and writes pass through, and a keyed cache can coalesce concurrent misses for the same key into one origin fetch.";
+    case "object-store": return "Blob storage: a server calls it for large payloads. Billed for bytes stored plus bytes served as egress, not modeled as a further routing hop.";
+    case "stream": return "Partitioned, replayable log: buffers events for one worker's consumer groups; a slow partition backs up only the consumers reading it, not the whole stream.";
     default: return "";
   }
 }
@@ -219,6 +229,8 @@ function Canvas({ result, running, allowedKinds, onReset }: { result: Simulation
               <div className="field-row"><label className="field-label">Replication lag <span>ms</span><input type="number" aria-label="Replication lag" min="0" max="60000" step="10" value={selected.replicationLagMs ?? 200} onChange={(e) => updateNode(selected.id, { replicationLagMs: Math.max(0, Math.min(60000, Number(e.target.value))) })} /></label><label className="field-label">Failover time <span>ms</span><input type="number" aria-label="Failover time" min="0" max="60000" step="10" value={selected.failoverMs ?? 3000} onChange={(e) => updateNode(selected.id, { failoverMs: Math.max(0, Math.min(60000, Number(e.target.value))) })} /></label></div>
               <label className="field-label">Consistency<select aria-label="Consistency" value={selected.consistency ?? "eventual"} onChange={(e) => updateNode(selected.id, { consistency: e.target.value as SystemNode["consistency"] })}><option value="eventual">Eventual</option><option value="read-your-writes">Read-your-writes</option></select></label>
               <p className="setting-note">A follower can lag the leader; reads can go stale for that long. Read-your-writes routes reads of recently written keys to the leader instead. Failover time is how long writes are unavailable after the leader dies.</p>
+              <div className="field-row"><label className="field-label">Election<select aria-label="Election strategy" value={selected.election ?? "heartbeat"} onChange={(e) => updateNode(selected.id, { election: e.target.value as SystemNode["election"] })}><option value="heartbeat">Heartbeat</option><option value="consensus">Consensus</option></select></label><label className="field-label">Election time <span>ms</span><input type="number" aria-label="Election time" min="0" max="60000" step="10" value={selected.electionMs ?? 2000} onChange={(e) => updateNode(selected.id, { electionMs: Math.max(0, Math.min(60000, Number(e.target.value))) })} /></label></div>
+              <p className="setting-note">Heartbeat election is fast but can elect two leaders during a network partition, producing conflicting writes once it heals. Consensus waits for a majority and never splits, at the cost of the election time on every failover.</p>
             </>}
             {selectedSettings.dbMode === "sharded" && <>
               <div className="field-row"><label className="field-label">Shards<input type="number" aria-label="Shards" min="1" max={LIMITS.shards} value={selected.shards ?? 4} onChange={(e) => updateNode(selected.id, { shards: Math.max(1, Math.min(LIMITS.shards, Number(e.target.value))) })} /></label><label className="field-label">Strategy<select aria-label="Shard strategy" value={selected.shardStrategy ?? "hash"} onChange={(e) => updateNode(selected.id, { shardStrategy: e.target.value as SystemNode["shardStrategy"] })}><option value="hash">Hash</option><option value="range">Range</option></select></label></div>
@@ -245,6 +257,18 @@ function Canvas({ result, running, allowedKinds, onReset }: { result: Simulation
               <div className="field-row"><label className="field-label">Visibility timeout <span>ms</span><input type="number" aria-label="Visibility timeout" min="0" max="600000" step="100" value={selected.visibilityTimeoutMs ?? 2000} onChange={(e) => updateNode(selected.id, { visibilityTimeoutMs: Math.max(0, Math.min(600000, Number(e.target.value))) })} /></label><label className="field-label">Max deliveries<input type="number" aria-label="Max deliveries" min="1" max="20" value={selected.maxDeliveries ?? 3} onChange={(e) => updateNode(selected.id, { maxDeliveries: Math.max(1, Math.min(20, Number(e.target.value))) })} /></label></div>
               <p className="setting-note">A worker that dies or outlasts the visibility timeout causes redelivery; a job redelivered more than this many times is dead-lettered instead of retried forever.</p>
             </>}
+          </div>}
+          {selected.kind === "object-store" && <div className="inspector-section">
+            <div className="inspector-section-title">OBJECT STORE</div>
+            <label className="field-label">Stored data <span>GB kept</span><input type="number" aria-label="Stored GB" min="0" max="1000000" step="10" value={selected.storedGb ?? 100} onChange={(e) => updateNode(selected.id, { storedGb: Math.max(0, Math.min(1000000, Number(e.target.value))) })} /></label>
+            <p className="setting-note">Billed as storage, independent of traffic. Requests carry the workload's payload size and object share; bytes served back to callers are billed again as egress.</p>
+          </div>}
+          {selected.kind === "stream" && <div className="inspector-section">
+            <div className="inspector-section-title">STREAM</div>
+            <div className="field-row"><label className="field-label">Partitions<input type="number" aria-label="Partitions" min="1" max={LIMITS.shards} value={selected.partitions ?? 6} onChange={(e) => updateNode(selected.id, { partitions: Math.max(1, Math.min(LIMITS.shards, Number(e.target.value))) })} /></label><label className="field-label">Consumer groups<input type="number" aria-label="Consumer groups" min="1" max="16" value={selected.consumerGroups ?? 1} onChange={(e) => updateNode(selected.id, { consumerGroups: Math.max(1, Math.min(16, Number(e.target.value))) })} /></label></div>
+            <p className="setting-note">Each partition preserves order for its own keys; each consumer group reads the whole stream independently, and a slow partition backs up only the consumers reading it.</p>
+            <label className="field-label">Retention <span>seconds</span><input type="number" aria-label="Retention seconds" min="60" max="604800" step="60" value={selected.retentionSeconds ?? 86400} onChange={(e) => updateNode(selected.id, { retentionSeconds: Math.max(60, Math.min(604800, Number(e.target.value))) })} /></label>
+            <p className="setting-note">How long events stay available for replay; a consumer that restarts within this window resumes from where it left off instead of losing events.</p>
           </div>}
           {selected.kind === "rate-limiter" && <div className="inspector-section">
             <div className="inspector-section-title">RATE LIMITER</div>

@@ -4,6 +4,8 @@ export interface PenaltyInput {
   overtimeSeconds: number;
   /** v2.2: seconds over the single lesson wall clock, accumulated by the workspace. */
   wallClockOvertime?: number;
+  /** v2.3: reasoning-graded contradictions between a stated expectation and the measured run, 5 points each. */
+  contradictions?: number;
 }
 export interface Deduction { reason: string; points: number }
 export interface PenaltyResult { total: number; deductions: Deduction[] }
@@ -14,14 +16,16 @@ const OVERTIME_POINTS_PER_15S = 1;
 const OVERTIME_CAP = 10;
 const WALL_CLOCK_POINTS_PER_30S = 1;
 const WALL_CLOCK_CAP = 10;
+const CONTRADICTION_PENALTY = 5;
 
 /**
  * Applies interview-mode penalties to a defense total:
  * -5 per hint beyond the first, -5 per wrong reflection attempt, up to
- * -10 for overtime at 1 point per 15s over the per-stage clocks, and up to
- * -10 for wall-clock overtime at 1 point per 30s over the lesson budget. Floored at 0.
+ * -10 for overtime at 1 point per 15s over the per-stage clocks, up to
+ * -10 for wall-clock overtime at 1 point per 30s over the lesson budget, and
+ * -5 per contradiction between a stated expectation and the measured run. Floored at 0.
  */
-export function applyPenalties(total: number, { hintsUsed, reflectionAttempts, overtimeSeconds, wallClockOvertime = 0 }: PenaltyInput): PenaltyResult {
+export function applyPenalties(total: number, { hintsUsed, reflectionAttempts, overtimeSeconds, wallClockOvertime = 0, contradictions = 0 }: PenaltyInput): PenaltyResult {
   const deductions: Deduction[] = [];
 
   const extraHints = Math.max(0, hintsUsed - 1);
@@ -46,6 +50,11 @@ export function applyPenalties(total: number, { hintsUsed, reflectionAttempts, o
     if (wallPoints > 0) {
       deductions.push({ reason: `${Math.round(wallClockOvertime)}s over the lesson wall clock`, points: wallPoints });
     }
+  }
+
+  const contradictionCount = Math.max(0, contradictions);
+  if (contradictionCount > 0) {
+    deductions.push({ reason: `${contradictionCount} contradiction${contradictionCount === 1 ? "" : "s"} between claims and the measured run`, points: contradictionCount * CONTRADICTION_PENALTY });
   }
 
   const deducted = deductions.reduce((sum, item) => sum + item.points, 0);

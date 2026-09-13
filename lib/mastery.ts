@@ -13,7 +13,7 @@ export interface ConceptStats {
   weakConcepts: string[];
 }
 
-export type ReviewReason = "low-defense" | "weak-concept" | "spaced-review" | "blank-canvas-next";
+export type ReviewReason = "low-defense" | "weak-concept" | "spaced-review" | "blank-canvas-next" | "mock-next";
 export interface ReviewQueueItem {
   lessonId: string;
   reason: ReviewReason;
@@ -95,6 +95,9 @@ export function reviewQueue(records: ProgressRecord[], lessons: Lesson[], now: D
     if (lesson.kind === "sim" && !record.blankCanvas) {
       items.push({ lessonId: record.lessonId, reason: "blank-canvas-next", due: completedAt });
     }
+    if (lesson.kind === "brief" && !(record.mockSessions && record.mockSessions > 0)) {
+      items.push({ lessonId: record.lessonId, reason: "mock-next", due: completedAt });
+    }
   }
 
   return items.sort((a, b) => a.due.getTime() - b.due.getTime());
@@ -123,13 +126,24 @@ export function estimationDiagnosis(records: ProgressRecord[]): string[] {
   return lines;
 }
 
+/**
+ * The graded-performance component for one record: a mock interview's performance rubric
+ * (speaking under pressure -- clarity, numbers stated, held a position) blends into the written
+ * defense score at 40% when a mock session produced one; either alone stands on its own.
+ */
+function gradedScore(record: ProgressRecord): number | undefined {
+  if (record.performanceScore === undefined) return record.defenseScore;
+  if (record.defenseScore === undefined) return record.performanceScore;
+  return record.defenseScore * 0.6 + record.performanceScore * 0.4;
+}
+
 export function masterySummary(records: ProgressRecord[], lessons: Lesson[], now: Date): MasterySummary {
   const current = currentRecords(records);
   const completed = new Set(current.map((item) => item.lessonId));
 
   const completionScore = lessons.length ? (completed.size / lessons.length) * 100 : 0;
 
-  const defenseScores = current.map((item) => item.defenseScore).filter((item): item is number => item !== undefined);
+  const defenseScores = current.map(gradedScore).filter((item): item is number => item !== undefined);
   const defenseScoreAvg = defenseScores.length ? defenseScores.reduce((sum, item) => sum + item, 0) / defenseScores.length : 0;
 
   const estimationScores = current.map((item) => item.estimationScore).filter((item): item is number => item !== undefined);

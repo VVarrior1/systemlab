@@ -18,13 +18,16 @@ import { Shell } from "./shell";
 import { Modal, Tip } from "./ui";
 import { ArchitectureCanvas } from "./architecture-canvas";
 import { Results, type AlternativeView } from "./results";
+/** v2.3: `seedSpread` is added to Results by the results-view agent working concurrently on
+ *  this file; cast until its prop type declares it, per the addendum's guidance. */
+const ResultsWithSpread = Results as unknown as (props: Record<string, unknown>) => ReturnType<typeof Results>;
 import { MissionPanel } from "./mission-panel";
 import { DefenseStage, type DefenseOutcome, type InterviewContext } from "./defense-stage";
 import { TechStage, type TechCommit } from "./tech-stage";
 import { ClarificationStage } from "./clarification-stage";
 
 const sandboxKinds: NodeKind[] = ["server", "load-balancer", "database", "cache", "queue", "cdn", "rate-limiter"];
-const failureKinds: FailureEvent["kind"][] = ["server", "database", "cache-flush", "slow-database", "slow-server", "region", "flapping", "error-burst"];
+const failureKinds: FailureEvent["kind"][] = ["server", "database", "cache-flush", "slow-database", "slow-server", "region", "flapping", "error-burst", "partition", "slow-partition"];
 const failureKindLabels: Record<FailureEvent["kind"], string> = {
   server: "Server replica dies",
   database: "Database replica dies",
@@ -34,7 +37,52 @@ const failureKindLabels: Record<FailureEvent["kind"], string> = {
   region: "Region outage",
   flapping: "Replica flaps (dead/alive)",
   "error-burst": "Replica error burst",
+  partition: "Network partition splits replicas",
+  "slow-partition": "One partition slows down",
 };
+
+/** Extra seeds Check runs beyond the three assessment seeds, to show min/median/max spread. */
+const VARIANCE_SEEDS = [4242, 9001];
+interface SeedSpread { p95: [number, number, number]; throughput: [number, number, number]; errorRate: [number, number, number] }
+
+function minMedianMax(values: number[]): [number, number, number] {
+  const sorted = [...values].sort((a, b) => a - b);
+  const n = sorted.length;
+  const mid = n % 2 === 1 ? sorted[(n - 1) / 2]! : (sorted[n / 2 - 1]! + sorted[n / 2]!) / 2;
+  return [sorted[0]!, mid, sorted[n - 1]!];
+}
+
+function seedSpreadFrom(results: SimulationResult[]): SeedSpread {
+  return {
+    p95: minMedianMax(results.map((r) => r.p95)),
+    throughput: minMedianMax(results.map((r) => r.throughput)),
+    errorRate: minMedianMax(results.map((r) => r.errorRate)),
+  };
+}
+
+/** Per-node measurements from the last run, handed to the interviewer and shown next to claims in self mode. */
+function nodeMetricSummaries(result: SimulationResult | null, architecture: Architecture): { nodeId: string; label: string; kind: string; utilization: number; processedPerSec: number; errors: number; hitRate?: number; shardSpread?: number[] }[] {
+  if (!result) return [];
+  return result.nodes.map((metric) => {
+    const node = architecture.nodes.find((candidate) => candidate.id === metric.nodeId);
+    const processedPerSec = result.duration > 0 ? Math.round((metric.processed / result.duration) * 10) / 10 : metric.processed;
+    let hitRate: number | undefined;
+    if (node?.kind === "cache") {
+      const steps = result.traces.flatMap((trace) => trace.steps).filter((step) => step.nodeId === metric.nodeId && (step.status === "hit" || step.status === "miss"));
+      if (steps.length > 0) hitRate = Math.round((steps.filter((step) => step.status === "hit").length / steps.length) * 1000) / 1000;
+    }
+    return {
+      nodeId: metric.nodeId,
+      label: node?.label ?? metric.nodeId,
+      kind: node?.kind ?? "server",
+      utilization: metric.utilization,
+      processedPerSec,
+      errors: metric.errors,
+      ...(hitRate !== undefined ? { hitRate } : {}),
+      ...(metric.shards ? { shardSpread: metric.shards } : {}),
+    };
+  });
+}
 
 /** The failure events a workload actually runs, including the legacy single-failure shorthand. */
 function failureRows(workload: Workload): FailureEvent[] {
@@ -206,6 +254,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
   const [blankConfirmOpen, setBlankConfirmOpen] = useState(false);
   const [techCommit, setTechCommit] = useState<TechCommit | null>(null);
   const [techSkipped, setTechSkipped] = useState(false);
+  const [seedSpread, setSeedSpread] = useState<SeedSpread | null>(null);
   const taskRef = useRef(0);
   const workers = useRef(new Set<Worker>());
   const pendingDraft = useRef<{ key: string; architecture: Architecture; workload: Workload } | null>(null);
@@ -239,7 +288,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
     setResult(null); setValidation(null); setCompleted(false); setBaseline(null); setBaselineWorkload(null); setResultWorkload(null);
     setResultRevision(-1); setError(""); setHintCount(0); setEstimationValues({}); setEstimationOutcomes(null);
     setAsked([]); setAlternatives(null); setAlternativesLoading(false); setRemixed(null); setRemixPreparing(false); setRemixCount(0);
-    setBlankCanvas(false); setBlankConfirmOpen(false); setTechCommit(null); setTechSkipped(false);
+    setBlankCanvas(false); setBlankConfirmOpen(false); setTechCommit(null); setTechSkipped(false); setSeedSpread(null);
     setAttempts(lesson ? readAttempts(lesson.id) : 0);
     setLegacyCompletion(!!lesson && readProgress().some((record) => record.lessonId === lesson.id && !isCurrentProgress(record)));
     setCompleted(!!lesson && readProgress().some((record) => record.lessonId === lesson.id && isCurrentProgress(record)));
@@ -328,18 +377,23 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
         if (issue) throw new Error(issue);
         setWorkload({ ...activeLesson.workload });
         revisionSnapshot = useEditor.getState().revision;
+        // Check runs the three assessment seeds plus two extra (variance view); objectives are
+        // still judged on the three assessment seeds alone.
         const seeds = assessmentSeeds(activeLesson);
-        const results: SimulationResult[] = [];
-        for (const [index, seed] of seeds.entries()) {
-          setRunLabel(`Checking ${index + 1} of ${seeds.length}`);
-          results.push(await simulate(snapshot, { ...activeLesson.workload, seed }));
+        const allSeeds = [...seeds, ...VARIANCE_SEEDS];
+        const allResults: SimulationResult[] = [];
+        for (const [index, seed] of allSeeds.entries()) {
+          setRunLabel(`Checking ${index + 1} of ${allSeeds.length}`);
+          allResults.push(await simulate(snapshot, { ...activeLesson.workload, seed }));
           if (task !== taskRef.current) return;
         }
+        const results = allResults.slice(0, seeds.length);
         if (lesson) setAttempts(recordAttempt(lesson.id));
         const passed = results.every((r) => activeLesson.objectives.every((o) => objectivePasses(r, o)));
         const inspected = results.find((r) => activeLesson.objectives.some((o) => !objectivePasses(r, o))) ?? results[0];
         setValidation({ revision: revisionSnapshot, passed, results });
         setResult(inspected); setResultWorkload({ ...activeLesson.workload, seed: inspected.seed }); setResultRevision(revisionSnapshot);
+        setSeedSpread(seedSpreadFrom(allResults));
         if (activeLesson.estimation.length > 0) setEstimationOutcomes(scoreEstimations(activeLesson.estimation, estimationValues, results, snapshot));
         if (passed) setToast("All three workload checks passed. Defend the design to finish.");
         else setError("Some requirements are not met across the three test workloads. Inspect the results and try another change.");
@@ -358,7 +412,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
   const resetAssessment = () => {
     setResult(null); setValidation(null); setCompleted(false); setEstimationValues({}); setEstimationOutcomes(null);
     setAlternatives(null); setAlternativesLoading(false); setResultRevision(-1);
-    setTechCommit(null); setTechSkipped(false);
+    setTechCommit(null); setTechSkipped(false); setSeedSpread(null);
   };
 
   /** Re-initialises the editor with a traffic-only canvas and switches this run to blank-canvas rules. */
@@ -513,21 +567,20 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
   const interviewContext: InterviewContext | undefined = lesson && !isWritten ? {
     architecture: architectureSummary(architecture),
     result: resultSummary(stale ? null : result),
-    techChoices: (techCommit?.techChoices ?? []).map((choice) => {
-      const node = architecture.nodes.find((candidate) => candidate.enabled && candidate.kind === choice.kind);
-      return {
-        nodeId: node?.id ?? choice.kind,
-        label: node?.label ?? choice.kind,
-        kind: choice.kind,
-        technology: choice.name,
-        why: choice.why,
-      };
-    }),
+    rationales: (techCommit?.techChoices ?? []).map((choice) => ({
+      nodeId: choice.nodeId,
+      label: architecture.nodes.find((candidate) => candidate.id === choice.nodeId)?.label ?? choice.kind,
+      kind: choice.kind,
+      technology: choice.name,
+      why: choice.why,
+      expected: choice.expected,
+    })),
     dataModel: techCommit?.dataModel ?? "",
     estimation: (estimationOutcomes ?? [])
       .map((outcome) => `${outcome.label}: predicted ${outcome.predicted} ${outcome.unit}, actual ${Math.round(outcome.actual * 100) / 100} ${outcome.unit} (score ${outcome.score})`)
       .join("; "),
     blankCanvas: blankRun,
+    metrics: nodeMetricSummaries(stale ? null : result, architecture),
   } : undefined;
 
   const setFailures = (next: FailureEvent[]) => setWorkload({ failures: next });
@@ -612,10 +665,11 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
           <label className="field-label">Event<select aria-label={`Failure ${index + 1} kind`} value={row.kind} disabled={trafficDisabled} onChange={(e) => patchFailure(index, { kind: e.target.value as FailureEvent["kind"] })}>{failureKinds.map((kind) => <option key={kind} value={kind}>{failureKindLabels[kind]}</option>)}</select></label>
           <label className="field-label">At <span>% of run</span><input type="number" aria-label={`Failure ${index + 1} start`} min="0" max="100" disabled={trafficDisabled} value={Math.round(row.at * 100)} onChange={(e) => patchFailure(index, { at: clamp(Number(e.target.value), 0, 100) / 100 })} /></label>
           <label className="field-label">Recovery <span>s, 0 = never</span><input type="number" aria-label={`Failure ${index + 1} duration`} min="0" max="600" disabled={trafficDisabled} value={row.duration ?? 0} onChange={(e) => patchFailure(index, { duration: clamp(Math.round(Number(e.target.value)), 0, 600) })} /></label>
-          {(row.kind === "slow-database" || row.kind === "slow-server") && <label className="field-label">Slowdown <span>x</span><input type="number" aria-label={`Failure ${index + 1} factor`} min="1" max="100" disabled={trafficDisabled} value={row.factor ?? 5} onChange={(e) => patchFailure(index, { factor: clamp(Number(e.target.value), 1, 100) })} /></label>}
+          {(row.kind === "slow-database" || row.kind === "slow-server" || row.kind === "slow-partition") && <label className="field-label">Slowdown <span>x</span><input type="number" aria-label={`Failure ${index + 1} factor`} min="1" max="100" disabled={trafficDisabled} value={row.factor ?? 5} onChange={(e) => patchFailure(index, { factor: clamp(Number(e.target.value), 1, 100) })} /></label>}
           {row.kind === "region" && <label className="field-label">Region<input aria-label={`Failure ${index + 1} region`} maxLength={24} disabled={trafficDisabled} value={row.region ?? ""} placeholder="primary" onChange={(e) => patchFailure(index, { region: e.target.value.trim() || undefined })} /></label>}
           {row.kind === "flapping" && <label className="field-label">Flap interval <span>ms</span><input type="number" aria-label={`Failure ${index + 1} interval`} min="50" max="60000" step="50" disabled={trafficDisabled} value={row.intervalMs ?? 1000} onChange={(e) => patchFailure(index, { intervalMs: clamp(Math.round(Number(e.target.value)), 50, 60000) })} /></label>}
           {row.kind === "error-burst" && <label className="field-label">Error ratio <span>{Math.round((row.ratio ?? 0.3) * 100)}%</span><input type="range" aria-label={`Failure ${index + 1} error ratio`} min="0" max="100" disabled={trafficDisabled} value={Math.round((row.ratio ?? 0.3) * 100)} onChange={(e) => patchFailure(index, { ratio: Number(e.target.value) / 100 })} /></label>}
+          {row.kind === "partition" && <label className="field-label">Split ratio <span>{Math.round((row.ratio ?? 0.5) * 100)}% isolated</span><input type="range" aria-label={`Failure ${index + 1} split ratio`} min="10" max="90" disabled={trafficDisabled} value={Math.round((row.ratio ?? 0.5) * 100)} onChange={(e) => patchFailure(index, { ratio: Number(e.target.value) / 100 })} /></label>}
           <button className="icon-button" aria-label={`Remove failure event ${index + 1}`} disabled={trafficDisabled} onClick={() => setFailures(failures.filter((_, i) => i !== index))}><Trash2 size={14} /></button>
         </div>)}
         <button className="button small" disabled={trafficDisabled || failures.length >= LIMITS.failureEvents} onClick={() => setFailures([...failures, { kind: "server", at: 0.5, duration: 0 }])}><Plus size={14} />Add failure event</button>
@@ -650,11 +704,12 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
           {trafficControls}
           {isBrief && lesson && clarifications.length > 0 && <div className="brief-stage"><ClarificationStage lesson={lesson} asked={asked} onAsk={askClarification} revealed={revealed} /></div>}
           {ready ? <ArchitectureCanvas result={stale ? null : result} running={running} allowedKinds={activeLesson?.allowedKinds ?? sandboxKinds} onReset={() => setResetOpen(true)} /> : <div className="canvas-loading"><LoaderCircle size={23} className="spin" />Opening architecture...</div>}
-          <Results
+          <ResultsWithSpread
             result={result} baseline={baseline} workload={resultWorkload} baselineWorkload={baselineWorkload}
             onPin={() => { setBaseline(result); setBaselineWorkload(resultWorkload); setToast("Baseline pinned for comparison."); }}
             onUnpin={() => { setBaseline(null); setBaselineWorkload(null); }}
             stale={stale} running={running} alternatives={alternatives} alternativesLoading={alternativesLoading}
+            seedSpread={seedSpread}
           />
         </div>
       </div>

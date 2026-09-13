@@ -12,7 +12,7 @@ import type {
   TraceStep,
   Workload,
 } from "../types";
-import { architectureCost, nodeCost, usageCost } from "../cost";
+import { architectureCost, egressCostFor, nodeCost, storageCostFor, usageCost } from "../cost";
 import { normalizeNode, normalizeWorkload } from "../templates";
 import { FetchCoalescer, KeyedCache, probabilisticHitRate } from "./cache";
 import { createRandom, fullJitterBackoff, lognormalMultiplier, powerLawKey, sigmaFor, weightedIndex } from "./distributions";
@@ -21,7 +21,7 @@ import { createScheduler } from "./scheduler";
 import { validateSimulation } from "./validate";
 
 export { validateSimulation } from "./validate";
-export const ENGINE_VERSION = "2.1.0";
+export const ENGINE_VERSION = "2.3.0";
 /** Default end-to-end request deadline. A workload may override it with `deadlineMs`. */
 export const REQUEST_DEADLINE_MS = 5000;
 /** No unit of work is instantaneous, however much capacity it has. */
@@ -30,6 +30,29 @@ const MIN_SERVICE_MS = 0.02;
 const TRACE_TARGET = 600;
 const MAX_TRACES = 32;
 const MAX_FAILED_TRACES = 4;
+/** An object-store lane moves 12,500 KB per second: transfer time = sizeKb / 12,500 s, about 100 Mb/s. */
+const OBJECT_STORE_KB_PER_MS = 12.5;
+/** Bytes are counted in KB and billed in GB. 1 GB = 1,024 x 1,024 KB. */
+const KB_PER_GB = 1048576;
+/** How often a stream consumer re-checks whether the replica that owns its partition is back. */
+const STREAM_REPLAY_POLL_MS = 250;
+
+/**
+ * Test hook. Set `streamProbe.records = []` before a run and the engine appends one record every
+ * time a worker replica starts processing a stream message, in processing order. That is the only
+ * way to assert per-partition ordering without depending on which requests happen to be traced.
+ */
+export interface StreamDeliveryRecord {
+  streamId: string;
+  group: number;
+  partition: number;
+  replica: number;
+  requestId: number;
+  at: number;
+  /** ms the message waited on its partition's lane before the consumer started it. */
+  waitMs: number;
+}
+export const streamProbe: { records: StreamDeliveryRecord[] | null } = { records: null };
 
 type NodeSettings = ReturnType<typeof normalizeNode>;
 type Done = (ok: boolean) => void;
@@ -46,6 +69,8 @@ interface Req {
   region: string;
   cacheRoll: number;
   edgeRoll: number;
+  /** Payload size of an object request in KB. Non-object requests carry 0. */
+  sizeKb: number;
   finished: boolean;
   traced: boolean;
   stale: boolean;
@@ -75,9 +100,21 @@ interface Job {
   stale: boolean;
   /** One of several lanes a quorum operation occupies. Counted per lane, not per component. */
   secondary: boolean;
-  /** Set when the job is one delivery of a queued message, so the queue can redeliver it. */
-  delivery: Delivery | undefined;
+  /** Set when the job is one delivery of a queued or streamed message, so it can be redelivered. */
+  handoff: Handoff | undefined;
+  /** A write this leader-follower database accepted on the isolated side of a network partition. */
+  minorityWrite: boolean;
   done: Done;
+}
+
+/** What a queue or a stream hands to a consumer replica along with the request. */
+interface Handoff {
+  delivery: Delivery;
+  /** The stream this message came from, when it came from a stream. */
+  stream: Runtime | undefined;
+  /** Partition index, or -1 for a queue. */
+  partition: number;
+  group: number;
 }
 
 /** One message being delivered to a worker, possibly more than once. */
@@ -179,6 +216,25 @@ interface Runtime {
   writeAcks: number[];
   quorumFailures: number;
   quorumWarned: boolean;
+  // object store
+  egressKb: number;
+  objectReads: number;
+  // streams
+  isStreamWorker: boolean;
+  partitionDeliveries: number[];
+  partitionWaitMs: number[];
+  partitionReplays: number[];
+  slowPartition: number;
+  slowPartitionUntil: number;
+  slowPartitionFactor: number;
+  // network partition (leader-follower)
+  splitUntil: number;
+  splitConflicts: number;
+  splitBaseline: number;
+  splitMinorityRejects: number;
+  majorityLeaderLane: number;
+  majorityReadyAt: number;
+  minorityReadyAt: number;
   // queues
   deliveries: number;
   redeliveries: number;
@@ -221,9 +277,17 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
 
   // ---------------------------------------------------------------- runtimes
 
+  // A worker fed by a stream owns whole partitions, so it needs one FIFO queue per replica rather
+  // than a shared pull pool: that is what keeps the messages of one partition in order.
+  const nodeKindById = new Map(architecture.nodes.map((node) => [node.id, node.kind]));
+  const streamFedWorkers = new Set(
+    architecture.edges.filter((edge) => nodeKindById.get(edge.source) === "stream").map((edge) => edge.target),
+  );
+
   const runtimes: Runtime[] = architecture.nodes.map((node, nodeIndex) => {
     const settings = normalizeNode(node);
     const isApplication = isApplicationServer(node);
+    const isStreamWorker = node.kind === "server" && node.role === "worker" && streamFedWorkers.has(node.id);
     const sharded = node.kind === "database" && settings.dbMode === "sharded";
     const shards = sharded ? Math.max(1, settings.shards) : 1;
     const lanes = node.replicas * shards;
@@ -231,7 +295,7 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     const poolOfLane: number[] = new Array(lanes).fill(0);
     const shardOfLane: number[] = new Array(lanes).fill(0);
     const newPool = (poolLanes: number[]): Pool => ({ lanes: poolLanes, pending: [], head: 0, waiting: 0, roundRobin: 0 });
-    const perLanePools = isApplication || (node.kind === "database" && (settings.dbMode === "leader-follower" || settings.dbMode === "quorum"));
+    const perLanePools = isApplication || isStreamWorker || (node.kind === "database" && (settings.dbMode === "leader-follower" || settings.dbMode === "quorum"));
     if (perLanePools) {
       // One lane per pool: application replicas are addressed directly, and a leader or a follower
       // is a distinct endpoint rather than an interchangeable member of a pool.
@@ -336,6 +400,22 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       writeAcks: [],
       quorumFailures: 0,
       quorumWarned: false,
+      egressKb: 0,
+      objectReads: 0,
+      isStreamWorker,
+      partitionDeliveries: new Array(node.kind === "stream" ? Math.max(1, settings.partitions) : 0).fill(0),
+      partitionWaitMs: new Array(node.kind === "stream" ? Math.max(1, settings.partitions) : 0).fill(0),
+      partitionReplays: new Array(node.kind === "stream" ? Math.max(1, settings.partitions) : 0).fill(0),
+      slowPartition: -1,
+      slowPartitionUntil: 0,
+      slowPartitionFactor: 1,
+      splitUntil: 0,
+      splitConflicts: 0,
+      splitBaseline: 0,
+      splitMinorityRejects: 0,
+      majorityLeaderLane: -1,
+      majorityReadyAt: 0,
+      minorityReadyAt: Infinity,
       deliveries: 0,
       redeliveries: 0,
       duplicates: 0,
@@ -392,6 +472,7 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
   let crossRegionRequests = 0;
   let crossRegionHops = 0;
   let lostWrites = 0;
+  let conflictingWrites = 0;
 
   const bucketIndex = (time: number) => Math.min(buckets.length - 1, Math.max(0, Math.floor(time / 1000)));
   const emit = (title: string, detail: string, nodeId?: string) => {
@@ -422,12 +503,23 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     if (failure.kind === "server" || failure.kind === "slow-server") target = explicitOfKind(failure.target, "server") ?? firstOfKind("server");
     else if (failure.kind === "database" || failure.kind === "slow-database") target = explicitOfKind(failure.target, "database") ?? firstOfKind("database");
     else if (failure.kind === "cache-flush") target = explicitOfKind(failure.target, "cache") ?? firstOfKind("cache");
+    else if (failure.kind === "partition") {
+      const leaderFollowers = runtimes.filter((runtime) => runtime.kind === "database" && runtime.node.enabled && runtime.settings.dbMode === "leader-follower");
+      const explicit = explicitOfKind(failure.target, "database");
+      target = (explicit && explicit.settings.dbMode === "leader-follower" ? explicit : undefined) ?? leaderFollowers[0];
+    } else if (failure.kind === "slow-partition") target = explicitOfKind(failure.target, "stream") ?? firstOfKind("stream");
     else if (failure.kind === "flapping" || failure.kind === "error-burst") {
       const explicit = failure.target ? byId.get(failure.target) : undefined;
       target = explicit && explicit.kind !== "traffic" && explicit.node.enabled ? explicit : firstOfKind("server") ?? firstOfKind("database");
     }
-    const grayKinds = failure.kind === "slow-database" || failure.kind === "slow-server" || failure.kind === "flapping" || failure.kind === "error-burst";
-    const defaultDuration = grayKinds ? 5 : 0;
+    const timedKinds =
+      failure.kind === "slow-database" ||
+      failure.kind === "slow-server" ||
+      failure.kind === "flapping" ||
+      failure.kind === "error-burst" ||
+      failure.kind === "partition" ||
+      failure.kind === "slow-partition";
+    const defaultDuration = timedKinds ? 5 : 0;
     planned.push({
       kind: failure.kind,
       atMs: at,
@@ -613,12 +705,32 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     }
     job.lane = lane;
     // The message has now been handed to a worker replica: a later redelivery reprocesses it.
-    if (job.delivery) job.delivery.started = true;
+    const handoff = job.handoff;
+    if (handoff) handoff.delivery.started = true;
     runtime.busy[lane] = true;
     runtime.active[lane] = job;
     const startedAt = now();
-    const slow = startedAt < runtime.slowUntil ? runtime.slowFactor : 1;
-    const service = Math.max(MIN_SERVICE_MS, runtime.serviceBase * lognormalMultiplier(serviceRandom, runtime.sigma) * slow);
+    let slow = startedAt < runtime.slowUntil ? runtime.slowFactor : 1;
+    const stream = handoff?.stream;
+    if (stream && handoff!.partition >= 0) {
+      // Per-partition telemetry: how long this partition's messages waited for their consumer.
+      stream.partitionWaitMs[handoff!.partition] += startedAt - job.enteredAt;
+      if (startedAt < stream.slowPartitionUntil && handoff!.partition === stream.slowPartition) slow *= stream.slowPartitionFactor;
+      if (streamProbe.records) {
+        streamProbe.records.push({
+          streamId: stream.node.id,
+          group: handoff!.group,
+          partition: handoff!.partition,
+          replica: lane,
+          requestId: request.id,
+          at: round(startedAt),
+          waitMs: round(startedAt - job.enteredAt),
+        });
+      }
+    }
+    let service = Math.max(MIN_SERVICE_MS, runtime.serviceBase * lognormalMultiplier(serviceRandom, runtime.sigma) * slow);
+    // Moving bytes takes time a small request never pays: a 512 KB object holds the lane for 41 ms.
+    if (runtime.kind === "object-store" && request.sizeKb > 0) service += request.sizeKb / OBJECT_STORE_KB_PER_MS;
     runtime.busyTime[lane] += activeMs(runtime, lane, startedAt, startedAt + service);
     scheduler.after(service, () => {
       runtime.busy[lane] = false;
@@ -662,34 +774,92 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     return ((key % shards) + shards) % shards;
   }
 
+  interface DatabaseRoute {
+    pool: Pool;
+    stale: boolean;
+    failover: boolean;
+    /** True when the write was accepted by the leader on the isolated side of a network partition. */
+    minority: boolean;
+  }
+
+  /** Round robin over the healthy replicas that are neither the leader nor excluded by a split. */
+  function followerLane(runtime: Runtime, exclude: (lane: number) => boolean): number {
+    for (let attempt = 0; attempt < runtime.lanes; attempt++) {
+      const lane = runtime.followerCursor++ % runtime.lanes;
+      if (!runtime.alive[lane] || exclude(lane)) continue;
+      return lane;
+    }
+    return -1;
+  }
+
+  /**
+   * A network partition cuts lane 0 off from the rest. The clients are cut off with the replicas:
+   * the share of keys that hashes onto the isolated lane keeps talking to it, everyone else reaches
+   * the majority. That is what makes two leaders visible to two sets of clients at the same time.
+   */
+  function isolatedSide(runtime: Runtime, request: Req): boolean {
+    return runtime.lanes > 1 && ((request.key % runtime.lanes) + runtime.lanes) % runtime.lanes === 0;
+  }
+
   /** Picks the pool a database request belongs in, and reports whether it will read stale data. */
-  function databaseRoute(runtime: Runtime, request: Req): { pool: Pool; stale: boolean; failover: boolean } {
+  function databaseRoute(runtime: Runtime, request: Req): DatabaseRoute {
     const settings = runtime.settings;
     if (settings.dbMode === "sharded") {
       const shard = shardOf(runtime, request.key);
       runtime.shardCalls[shard]++;
-      return { pool: runtime.pools[shard], stale: false, failover: false };
+      return { pool: runtime.pools[shard], stale: false, failover: false, minority: false };
     }
-    if (settings.dbMode !== "leader-follower") return { pool: runtime.pools[0], stale: false, failover: false };
+    if (settings.dbMode !== "leader-follower") return { pool: runtime.pools[0], stale: false, failover: false, minority: false };
     const committedAt = runtime.committed!.get(request.key);
     const recentlyWritten = committedAt !== undefined && now() - committedAt < settings.replicationLagMs;
+    const at = now();
+    if (at < runtime.splitUntil) return splitRoute(runtime, request, recentlyWritten);
     if (!request.read) {
-      if (now() < runtime.failoverUntil) return { pool: runtime.pools[runtime.leaderLane], stale: false, failover: true };
-      return { pool: runtime.pools[runtime.leaderLane], stale: false, failover: false };
+      if (at < runtime.failoverUntil) return { pool: runtime.pools[runtime.leaderLane], stale: false, failover: true, minority: false };
+      return { pool: runtime.pools[runtime.leaderLane], stale: false, failover: false, minority: false };
     }
     if (recentlyWritten && settings.consistency === "read-your-writes") {
-      return { pool: runtime.pools[runtime.leaderLane], stale: false, failover: false };
+      return { pool: runtime.pools[runtime.leaderLane], stale: false, failover: false, minority: false };
     }
-    let chosen = -1;
-    for (let attempt = 0; attempt < runtime.lanes; attempt++) {
-      const lane = runtime.followerCursor++ % runtime.lanes;
-      if (lane === runtime.leaderLane || !runtime.alive[lane]) continue;
-      chosen = lane;
-      break;
-    }
-    if (chosen < 0) return { pool: runtime.pools[runtime.leaderLane], stale: false, failover: false };
+    const chosen = followerLane(runtime, (lane) => lane === runtime.leaderLane);
+    if (chosen < 0) return { pool: runtime.pools[runtime.leaderLane], stale: false, failover: false, minority: false };
     if (recentlyWritten) runtime.staleServed++;
-    return { pool: runtime.pools[chosen], stale: recentlyWritten, failover: false };
+    return { pool: runtime.pools[chosen], stale: recentlyWritten, failover: false, minority: false };
+  }
+
+  /**
+   * Routing while the replicas are split in two. Each side answers reads. Writes need a leader on
+   * that side: the majority elects one after electionMs, and the isolated lane keeps its old leader
+   * under heartbeat election (split brain) or steps down under consensus election (no quorum).
+   */
+  function splitRoute(runtime: Runtime, request: Req, recentlyWritten: boolean): DatabaseRoute {
+    const settings = runtime.settings;
+    const at = now();
+    const minority = isolatedSide(runtime, request);
+    if (request.read) {
+      if (minority) {
+        if (recentlyWritten) runtime.staleServed++;
+        return { pool: runtime.pools[0], stale: recentlyWritten, failover: false, minority: false };
+      }
+      if (recentlyWritten && settings.consistency === "read-your-writes" && runtime.majorityLeaderLane >= 0 && at >= runtime.majorityReadyAt) {
+        return { pool: runtime.pools[runtime.majorityLeaderLane], stale: false, failover: false, minority: false };
+      }
+      const lane = followerLane(runtime, (candidate) => candidate === 0);
+      if (lane < 0) return { pool: runtime.pools[0], stale: recentlyWritten, failover: false, minority: false };
+      if (recentlyWritten) runtime.staleServed++;
+      return { pool: runtime.pools[lane], stale: recentlyWritten, failover: false, minority: false };
+    }
+    if (minority) {
+      if (at < runtime.minorityReadyAt) {
+        runtime.splitMinorityRejects++;
+        return { pool: runtime.pools[0], stale: false, failover: true, minority: false };
+      }
+      return { pool: runtime.pools[0], stale: false, failover: false, minority: true };
+    }
+    if (runtime.majorityLeaderLane < 0 || at < runtime.majorityReadyAt) {
+      return { pool: runtime.pools[runtime.leaderLane], stale: false, failover: true, minority: false };
+    }
+    return { pool: runtime.pools[runtime.majorityLeaderLane], stale: false, failover: false, minority: false };
   }
 
   function refreshHealth(runtime: Runtime) {
@@ -826,7 +996,7 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     return runtime.kind === "traffic" || runtime.kind === "cdn" ? request.region : runtime.region;
   }
 
-  function enter(request: Req, runtime: Runtime, from: Runtime, done: Done, laneHint = -1, delivery?: Delivery) {
+  function enter(request: Req, runtime: Runtime, from: Runtime, done: Done, laneHint = -1, handoff?: Handoff) {
     if (request.finished) return;
     runtime.callsReceived++;
     if (!request.read) runtime.writeCalls++;
@@ -835,13 +1005,13 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       request.crossRegionMs += crossRegionLatencyMs;
       runtime.crossRegionIn++;
       crossRegionHops++;
-      scheduler.after(crossRegionLatencyMs, () => admit(request, runtime, from, done, laneHint, delivery));
+      scheduler.after(crossRegionLatencyMs, () => admit(request, runtime, from, done, laneHint, handoff));
       return;
     }
-    admit(request, runtime, from, done, laneHint, delivery);
+    admit(request, runtime, from, done, laneHint, handoff);
   }
 
-  function admit(request: Req, runtime: Runtime, from: Runtime, done: Done, laneHint: number, delivery?: Delivery) {
+  function admit(request: Req, runtime: Runtime, from: Runtime, done: Done, laneHint: number, handoff?: Handoff) {
     if (request.finished) return;
     const settings = runtime.settings;
 
@@ -860,12 +1030,14 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     let pool = runtime.pools[0];
     let stale = false;
     let failover = false;
+    let minorityWrite = false;
     if (runtime.kind === "database") {
       const route = databaseRoute(runtime, request);
       pool = route.pool;
       stale = route.stale;
       failover = route.failover;
-    } else if (runtime.isApplication) {
+      minorityWrite = route.minority;
+    } else if (runtime.isApplication || runtime.isStreamWorker) {
       pool = runtime.pools[laneHint >= 0 && laneHint < runtime.pools.length ? laneHint : 0];
     }
 
@@ -897,7 +1069,8 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       lane: pinned,
       stale,
       secondary: false,
-      delivery,
+      handoff,
+      minorityWrite,
       done,
     };
     request.pending.push(job);
@@ -1006,7 +1179,8 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
         lane,
         stale,
         secondary: true,
-        delivery: undefined,
+        handoff: undefined,
+        minorityWrite: false,
         done: (ok) => {
           if (!ok) {
             settleOperation(false);
@@ -1168,10 +1342,108 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
           else giveUp();
         },
         -1,
-        delivery,
+        { delivery, stream: undefined, partition: -1, group: 0 },
       );
     };
     attempt();
+  }
+
+  /** Partition for a message, hashed from its key so the hot key does not decide the layout alone. */
+  function partitionOf(stream: Runtime, key: number): number {
+    const partitions = Math.max(1, stream.settings.partitions);
+    return (Math.imul(key >>> 0, 2654435761) >>> 0) % partitions;
+  }
+
+  /**
+   * A stream is a partitioned log, not a work queue. Every consumer group receives every message, so
+   * G groups means G times the consumer work. Inside one group a partition belongs to exactly one
+   * replica (round robin, offset by the group index), which is what keeps a partition's messages in
+   * order: they queue on one lane and leave it one at a time.
+   *
+   * The log keeps its offsets. When the replica that owns a partition dies, its messages park until
+   * it comes back and are then re-consumed from the last committed offset - a replay that repeats any
+   * work already started, unless the consumer is idempotent.
+   */
+  function deliverFromStream(request: Req, stream: Runtime, finalDone: Done) {
+    const worker = stream.next[0];
+    if (!worker || worker.lanes <= 0) {
+      finalDone(true);
+      return;
+    }
+    const partition = partitionOf(stream, request.key);
+    const groups = Math.max(1, stream.settings.consumerGroups);
+    const idempotent = worker.settings.idempotent;
+    let remaining = groups;
+    let broken = false;
+    const onGroup = (ok: boolean) => {
+      if (broken) return;
+      if (!ok) {
+        broken = true;
+        finalDone(false);
+        return;
+      }
+      remaining--;
+      if (remaining === 0) finalDone(true);
+    };
+    for (let group = 0; group < groups; group++) {
+      const lane = (partition + group) % worker.lanes;
+      const delivery: Delivery = { deliveries: 0, started: false, resolved: false };
+      const handoff: Handoff = { delivery, stream, partition, group };
+      const resolve = (ok: boolean) => {
+        if (delivery.resolved) return;
+        delivery.resolved = true;
+        onGroup(ok);
+      };
+      const attempt = () => {
+        if (request.finished || delivery.resolved) return;
+        if (!worker.alive[lane]) {
+          // The partition is parked at its offset: nothing else may consume it, so it just waits.
+          scheduler.after(STREAM_REPLAY_POLL_MS, attempt);
+          return;
+        }
+        delivery.deliveries++;
+        stream.deliveries++;
+        stream.partitionDeliveries[partition]++;
+        if (delivery.deliveries > 1) {
+          stream.redeliveries++;
+          stream.partitionReplays[partition]++;
+          pushStep(request, stream, "redelivered");
+          if (stream.redeliveries === 1) {
+            emit(
+              `${stream.node.label} replayed partition ${partition} from its last committed offset`,
+              `Replica ${lane + 1} owns that partition. It died before committing an offset, so everything after the last commit is consumed again. Replay is why a log never loses a message and why a consumer must be idempotent.`,
+              stream.node.id,
+            );
+          }
+          if (delivery.started) {
+            pushStep(request, worker, "duplicate");
+            if (idempotent) {
+              stream.deduped++;
+              resolve(true);
+              return;
+            }
+            stream.duplicates++;
+          }
+        }
+        enter(
+          request,
+          worker,
+          stream,
+          (ok) => {
+            if (delivery.resolved) return;
+            if (ok) {
+              resolve(true);
+              return;
+            }
+            // The replica died mid-message. The offset was never committed, so the log replays it.
+            scheduler.after(STREAM_REPLAY_POLL_MS, attempt);
+          },
+          lane,
+          handoff,
+        );
+      };
+      attempt();
+    }
   }
 
   /** The node has finished its own processing. Decide what happens to the request next. */
@@ -1191,9 +1463,29 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
         if (!request.read) {
           if (runtime.committed) runtime.committed.set(request.key, now());
           if (runtime.settings.dbMode === "leader-follower") noteWriteAck(runtime);
+          if (job.minorityWrite) {
+            // Two leaders acknowledged writes at the same time. This one is on the losing side.
+            runtime.splitConflicts++;
+            conflictingWrites++;
+          }
         }
         settle(job, job.stale ? "stale" : "ok");
         job.done(true);
+        return;
+      }
+      case "object-store": {
+        // Bytes served to a client are egress, and egress is the line on the bill that surprises people.
+        if (request.read && request.sizeKb > 0) {
+          runtime.egressKb += request.sizeKb;
+          runtime.objectReads++;
+        }
+        settle(job, "ok");
+        job.done(true);
+        return;
+      }
+      case "stream": {
+        settle(job, "ok");
+        deliverFromStream(request, runtime, job.done);
         return;
       }
       case "cdn": {
@@ -1201,6 +1493,8 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
         if (request.read) runtime.cacheReads++;
         if (request.read && request.edgeRoll < rate) {
           runtime.cacheHits++;
+          // An edge hit still ships the bytes: the egress is the CDN's, not the origin's.
+          if (request.sizeKb > 0) runtime.egressKb += request.sizeKb;
           settle(job, "hit");
           job.done(true);
           return;
@@ -1493,6 +1787,94 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     drain(runtime);
   }
 
+  /**
+   * A network partition cuts replica 1 off from the rest. Nothing dies: both sides keep serving the
+   * clients that can still reach them. What differs is who may accept a write.
+   */
+  function startSplit(runtime: Runtime, until: number) {
+    const settings = runtime.settings;
+    const at = now();
+    if (runtime.lanes < 2) {
+      emit(
+        `${runtime.node.label} cannot be partitioned`,
+        "A partition splits replicas from each other, and this database has only one. Add followers before scheduling one.",
+        runtime.node.id,
+      );
+      return;
+    }
+    runtime.splitUntil = until;
+    runtime.splitBaseline = runtime.splitConflicts;
+    const leaderIsolated = runtime.leaderLane === 0;
+    runtime.majorityLeaderLane = leaderIsolated ? -1 : runtime.leaderLane;
+    runtime.majorityReadyAt = leaderIsolated ? at + settings.electionMs : at;
+    runtime.minorityReadyAt = settings.election === "consensus" ? Infinity : leaderIsolated ? at : at + settings.electionMs;
+    emit(
+      `${runtime.node.label} was split in two`,
+      `Replica 1 is isolated from the other ${runtime.lanes - 1} for ${round((until - at) / 1000)}s. Both sides still answer reads. With ${settings.election} election the ${
+        settings.election === "consensus"
+          ? "minority side refuses writes because it cannot reach a quorum, and the majority elects a leader"
+          : "isolated side keeps accepting writes while the majority elects its own leader"
+      } after ${settings.electionMs.toLocaleString("en-US")} ms.`,
+      runtime.node.id,
+    );
+    scheduler.after(settings.electionMs, () => {
+      if (now() >= runtime.splitUntil) return;
+      if (runtime.majorityLeaderLane < 0) {
+        let promoted = -1;
+        for (let lane = 1; lane < runtime.lanes; lane++) {
+          if (runtime.alive[lane]) {
+            promoted = lane;
+            break;
+          }
+        }
+        if (promoted < 0) {
+          emit(`${runtime.node.label} has no majority replica to promote`, "Every replica on the majority side is down, so writes keep failing there.", runtime.node.id);
+          return;
+        }
+        runtime.majorityLeaderLane = promoted;
+        emit(
+          `${runtime.node.label} elected replica ${promoted + 1} on the majority side`,
+          settings.election === "consensus"
+            ? "A quorum of replicas agreed on the new leader, and the isolated replica has already stopped accepting writes. There is exactly one leader."
+            : "A missed heartbeat is not proof that the old leader is gone. It is still up and still accepting writes from the clients on its side, so this design now has two leaders.",
+          runtime.node.id,
+        );
+      }
+      if (settings.election === "heartbeat" && !leaderIsolated) {
+        emit(
+          `${runtime.node.label} replica 1 declared itself leader`,
+          "It stopped hearing the leader's heartbeats and promoted itself. Its clients now write to a replica the rest of the system cannot see.",
+          runtime.node.id,
+        );
+      }
+    });
+  }
+
+  function healSplit(runtime: Runtime) {
+    if (runtime.splitUntil === 0) return;
+    const conflicts = runtime.splitConflicts - runtime.splitBaseline;
+    runtime.splitUntil = 0;
+    if (runtime.majorityLeaderLane >= 0) runtime.leaderLane = runtime.majorityLeaderLane;
+    runtime.majorityLeaderLane = -1;
+    runtime.minorityReadyAt = Infinity;
+    if (conflicts > 0) {
+      // The majority side wins the merge: everything the isolated leader accepted is thrown away.
+      lostWrites += conflicts;
+      emit(
+        `${runtime.node.label} discarded ${conflicts.toLocaleString("en-US")} write${conflicts === 1 ? "" : "s"} when the partition healed`,
+        `They were acknowledged by the isolated leader while a second leader was serving everyone else. Only one version of a key can survive the merge, and the minority's is the one that goes. Those clients were told the write succeeded.`,
+        runtime.node.id,
+      );
+    } else {
+      emit(
+        `${runtime.node.label} healed its partition`,
+        `Replica 1 rejoined the others. ${runtime.splitMinorityRejects.toLocaleString("en-US")} write${runtime.splitMinorityRejects === 1 ? " was" : "s were"} refused on the isolated side rather than accepted and later thrown away.`,
+        runtime.node.id,
+      );
+    }
+    drain(runtime);
+  }
+
   for (const item of planned) {
     const atMs = item.atMs;
     if (item.kind === "cache-flush") {
@@ -1561,6 +1943,43 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
         target.burstUntil = 0;
         target.burstRatio = 0;
         emit(`${target.node.label} replica 1 stopped returning errors`, "Its error rate is back to zero. Nothing about its health status ever changed.", target.node.id);
+      });
+      continue;
+    }
+    if (item.kind === "partition") {
+      const target = item.target;
+      if (!target) {
+        emit("No leader-follower database to partition", "A network partition splits the replicas of a leader-follower database, and this design has none.");
+        continue;
+      }
+      const until = item.recoverMs > 0 ? atMs + item.recoverMs : horizon;
+      scheduler.after(atMs, () => startSplit(target, until));
+      if (item.recoverMs > 0) scheduler.after(until, () => healSplit(target));
+      continue;
+    }
+    if (item.kind === "slow-partition") {
+      const target = item.target;
+      if (!target) {
+        emit("No stream to slow a partition on", "A slow partition needs a stream: it multiplies the service time of one partition's consumer, not of the whole design.");
+        continue;
+      }
+      const until = atMs + (item.recoverMs || 5000);
+      const partition = 0;
+      scheduler.after(atMs, () => {
+        target.slowPartition = partition;
+        target.slowPartitionUntil = until;
+        target.slowPartitionFactor = item.factor;
+        emit(
+          `${target.node.label} partition ${partition} slowed down ${item.factor}x`,
+          `The consumer that owns partition ${partition} takes ${item.factor} times as long per message for ${round((until - atMs) / 1000)}s. Only that partition backs up: the other partitions have their own consumers and their own offsets.`,
+          target.node.id,
+        );
+      });
+      scheduler.after(until, () => {
+        target.slowPartitionUntil = 0;
+        target.slowPartitionFactor = 1;
+        target.slowPartition = -1;
+        emit(`${target.node.label} partition ${partition} recovered its normal speed`, "Its consumer is back to normal service time, but the backlog it built still has to drain in order.", target.node.id);
       });
       continue;
     }
@@ -1648,6 +2067,8 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
       const region = regionNames[weightedIndex(workloadRandom(), regionShares)];
       const cacheRoll = workloadRandom();
       const edgeRoll = workloadRandom();
+      // Only object workloads draw a size, so a design without objects keeps the v2.1 random stream.
+      const sizeKb = plan.objectShare > 0 && workloadRandom() < plan.objectShare ? plan.payloadKb : 0;
       scheduler.after(arrivalTime, () => {
         const id = ++requestCount;
         const request: Req = {
@@ -1658,6 +2079,7 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
           region,
           cacheRoll,
           edgeRoll,
+          sizeKb,
           finished: false,
           traced: id <= 4 || id % traceStride === 0,
           stale: false,
@@ -1768,6 +2190,16 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
 
   /** Measured operations extrapolated to one hour, which is what the usage rates are quoted in. */
   const hourly = (value: number) => (value / (plan.duration || 1)) * 3600;
+  const credits = (value: number) => Math.round(value * 1000) / 1000;
+  // Bytes served out of the system, extrapolated to an hour exactly like the operation counts.
+  const egressKbTotal = runtimes.reduce((sum, runtime) => sum + (runtime.node.enabled ? runtime.egressKb : 0), 0);
+  const egressGb = credits(hourly(egressKbTotal) / KB_PER_GB);
+  const storedGbTotal = runtimes.reduce(
+    (sum, runtime) => sum + (runtime.kind === "object-store" && runtime.node.enabled ? Math.max(0, runtime.settings.storedGb) : 0),
+    0,
+  );
+  const storageCost = storageCostFor(storedGbTotal);
+  const egressCost = egressCostFor(egressGb);
   function usageOf(runtime: Runtime): number {
     const crossRegion = hourly(runtime.crossRegionIn);
     switch (runtime.kind) {
@@ -1783,13 +2215,18 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
         return usageCost({ queue: hourly(runtime.deliveries), crossRegion });
       case "rate-limiter":
         return usageCost({ "rate-limiter": hourly(runtime.callsReceived), crossRegion });
+      case "object-store":
+        // Storage is a level, not a flow: it is billed for the hour whether or not anything reads it.
+        return usageCost({ storedGb: runtime.settings.storedGb, crossRegion });
+      case "stream":
+        return usageCost({ queue: hourly(runtime.deliveries), crossRegion });
       default:
         return usageCost({ crossRegion });
     }
   }
   const provisionedCost = architectureCost(architecture.nodes);
   // Rounded before the total so the two halves the learner is shown add up to the bill exactly.
-  const usageTotal = round(runtimes.reduce((sum, runtime) => sum + (runtime.node.enabled ? usageOf(runtime) : 0), 0));
+  const usageTotal = round(runtimes.reduce((sum, runtime) => sum + (runtime.node.enabled ? usageOf(runtime) : 0), 0) + egressCost);
   const totalCost = round(provisionedCost + usageTotal);
   const duplicates = runtimes.reduce((sum, runtime) => sum + runtime.duplicates, 0);
   const dedupedDuplicates = runtimes.reduce((sum, runtime) => sum + runtime.deduped, 0);
@@ -1839,6 +2276,17 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     deadLettered: runtime.deadLettered,
     burstErrors: runtime.burstErrors,
     flapCycles: runtime.flapCycles,
+    storedGb: runtime.kind === "object-store" ? runtime.settings.storedGb : 0,
+    egressGb: credits(hourly(runtime.egressKb) / KB_PER_GB),
+    partitions: runtime.kind === "stream" ? Math.max(1, runtime.settings.partitions) : 0,
+    consumerGroups: runtime.kind === "stream" ? Math.max(1, runtime.settings.consumerGroups) : 0,
+    partitionDeliveries: runtime.partitionDeliveries.slice(),
+    partitionWaitMs: runtime.partitionWaitMs.map((value) => round(value)),
+    partitionReplays: runtime.partitionReplays.slice(),
+    election: runtime.settings.election,
+    electionMs: runtime.settings.electionMs,
+    splitConflicts: runtime.kind === "database" ? runtime.splitConflicts : 0,
+    splitMinorityRejects: runtime.kind === "database" ? runtime.splitMinorityRejects : 0,
     usageCost: usageOf(runtime),
   }));
 
@@ -1902,6 +2350,11 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     deadLetterRate: ratio(deadLettered / (requestCount || 1)),
     lostWrites,
     poolRejections,
+    conflictingWrites,
+    egressGb,
+    storedGb: storedGbTotal,
+    storageCost,
+    egressCost,
     provisionedCost,
     usageCost: usageTotal,
     cost: totalCost,
@@ -1935,15 +2388,23 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     cost: totalCost,
     provisionedCost,
     usageCost: usageTotal,
-    costBreakdown: architecture.nodes
-      .filter((node) => node.kind !== "traffic" && node.enabled)
-      .map((node) => ({ nodeId: node.id, label: node.label, cost: nodeCost(node), usage: usageOf(byId.get(node.id)!) })),
+    costBreakdown: [
+      ...architecture.nodes
+        .filter((node) => node.kind !== "traffic" && node.enabled)
+        .map((node) => ({ nodeId: node.id, label: node.label, cost: nodeCost(node), usage: usageOf(byId.get(node.id)!) })),
+      // Egress is billed on the bytes that leave, wherever they leave from, so it gets its own row.
+      ...(egressCost > 0 ? [{ nodeId: "egress", label: "Egress", cost: 0, usage: egressCost }] : []),
+    ],
     duplicates,
     duplicateRate: telemetry.duplicateRate,
     deadLettered,
     deadLetterRate: telemetry.deadLetterRate,
     lostWrites,
     poolRejections,
+    conflictingWrites,
+    egressGb,
+    storageCost,
+    egressCost,
     maxQueueDepth: peakGlobalQueue,
     nodes,
     samples,
@@ -1953,6 +2414,9 @@ export function runSimulation(architecture: Architecture, workload: Workload): S
     assumptions: assumptionsFor(plan),
   };
 }
+
+/** 0.25 -> "25%". Assumption text quotes the workload back to the learner in the units they set it in. */
+const percentOf = (value: number) => `${Math.round(value * 1000) / 10}%`;
 
 function assumptionsFor(plan: Required<Workload>): string[] {
   return [
@@ -1973,6 +2437,9 @@ function assumptionsFor(plan: Required<Workload>): string[] {
     `All generated requests are simulated individually, with a ${plan.deadlineMs.toLocaleString("en-US")} ms end-to-end deadline. Arrivals stop at the configured duration; outstanding work is watched until the deadline passes. Supported runs are 1-60 seconds at 1-3,000 requests/s over at most 48 components.`,
     "Gray failures are partial, not binary. A slow server or slow database multiplies service time; a flapping replica dies and recovers on its own interval, so a health check sees whichever state it lands on; an error burst fails a share of one replica's requests while that replica keeps answering health checks normally.",
     "Throughput counts successful completions inside the traffic window. Latency percentiles cover successful requests only, including the drain period. errorRate excludes deliberate rejections; rejectedRate reports them separately. Utilization measures occupied lane time against the time a lane was both inside the window and alive.",
-    "Costs are teaching credits and have two halves. Provisioned cost is the per-kind nonlinear curve (fixed + base x (capacity / reference) ^ exponent per replica, times replicas, shards, and a premium for followers). Usage cost prices the operations actually measured, extrapolated to an hour, per 1,000 operations: database 0.004 with writes billed twice, cache 0.0005, CDN 0.001 per edge hit, queue 0.0005 per delivered message (a redelivery is another delivery), server 0.0005, rate limiter 0.0002, and 0.002 per cross-region hop. cost = provisionedCost + usageCost. Imported cost fields are ignored. This is not provider pricing, and it ignores data size, egress and storage.",
+    `Object stores hold whole payloads, so bytes cost time as well as money: ${plan.objectShare > 0 ? `${percentOf(plan.objectShare)} of requests carry a ${plan.payloadKb.toLocaleString("en-US")} KB object and ` : "an object request carries the workload's payload size and "}a store lane is held for its own service time plus sizeKb / 12,500 seconds of transfer, about 100 Mb/s per lane, before the configured latency is added. Reads served by a store, and object reads served from a CDN edge, count their bytes as egress. A write uploads without producing egress, and an object never expires or tiers on its own: storedGb is a level you pay for every hour, whatever the traffic does.`,
+    "A stream is a partitioned log, not a work queue. A message's partition is hashed from its key, every consumer group receives every message (so G groups means G times the consumer work), and inside a group a partition is owned by exactly one worker replica - round robin over replicas, offset by the group - which is what keeps a partition in order and what makes replicas past the partition count idle. A slow or dead consumer backs up only its own partitions. The log keeps offsets rather than deleting messages, so a replica that dies mid-message parks its partition and replays it from the last committed offset when it returns; a replayed message that had already started is a duplicate unless the worker is idempotent. Retention, compaction and consumer-group rebalancing are not modelled.",
+    "A network partition splits replica 1 of a leader-follower database from the rest, and splits its clients with it: the keys that hash onto the isolated lane keep talking to it. Both sides keep answering reads. With heartbeat election the isolated replica cannot tell a dead leader from an unreachable one, so after electionMs there are two leaders and both acknowledge writes; the minority's writes are discarded when the partition heals and counted as conflictingWrites and as lostWrites. With consensus election the minority has no quorum, refuses writes and fails those clients instead, so conflictingWrites stays zero and the errors rise. Witness nodes, leases, fencing tokens and automatic client redirection are not modelled.",
+    "Costs are teaching credits and have two halves. Provisioned cost is the per-kind nonlinear curve (fixed + base x (capacity / reference) ^ exponent per replica, times replicas, shards, and a premium for followers). Usage cost prices the operations actually measured, extrapolated to an hour, per 1,000 operations: database 0.004 with writes billed twice, cache 0.0005, CDN 0.001 per edge hit, queue and stream 0.0005 per delivered message (a redelivery or a second consumer group is another delivery), server 0.0005, rate limiter 0.0002, and 0.002 per cross-region hop. Data is billed by size, not by operation: 0.02 credits per GB-month of storage, charged for one hour at a time, and 0.09 per GB of egress, which is why a large-payload design can be dominated by bytes it never computed on. cost = provisionedCost + usageCost, and usageCost includes storage and egress. Imported cost fields are ignored. This is not provider pricing.",
   ];
 }

@@ -108,3 +108,22 @@
 .defense-weak-concepts{border:1px solid #eddcc9;border-radius:6px;background:#fbf1e7;padding:10px 13px}
 .defense-weak-concepts ul{list-style:disc;margin:6px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
 .defense-weak-concepts li{font-size:11px;line-height:1.6;color:#a9663a}
+
+/* ---------------------------------------------- v2.3 reasoning-graded feedback */
+
+.defense-contradictions{border:1px solid #f0c4c0;border-radius:6px;background:#fdf1f0;padding:10px 13px}
+.defense-contradictions ul{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+.defense-contradictions li p{margin:0;font-size:11px;line-height:1.6;color:#9a352d}
+.defense-contradictions li strong{font-weight:700}
+.defense-contradiction-note{margin-top:2px!important;color:#b3564d!important;font-style:italic}
+
+.defense-datamodel-items{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.defense-datamodel-items li{display:flex;align-items:flex-start;gap:10px;font-size:11px}
+.defense-datamodel-items li p{margin:0;color:var(--muted)}
+
+.defense-claims-check{border:1px solid var(--line);border-radius:6px;background:var(--surface);padding:10px 13px;margin-bottom:4px}
+.defense-claims-check ul{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+.defense-claims-check li{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;font-size:11px}
+.defense-claims-check li strong{flex:none;font-size:12px;color:var(--ink)}
+.defense-claim{color:var(--muted)}
+.defense-measured{font:11px var(--mono);color:#a9663a}
