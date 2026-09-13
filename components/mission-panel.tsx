@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { ArrowRight, BookMarked, BookOpen, Check, CheckCheck, ChevronRight, Circle, Clock3, ExternalLink, Lightbulb, LoaderCircle, RotateCcw, Shuffle, ShieldCheck, Target } from "lucide-react";
+import { ArrowRight, BookMarked, BookOpen, Check, CheckCheck, ChevronRight, Circle, Clock3, ExternalLink, Eraser, Lightbulb, LoaderCircle, RotateCcw, Shuffle, ShieldCheck, Target } from "lucide-react";
 import type { Lesson } from "@/lib/types";
 import type { EstimationId, EstimationPrompt } from "@/lib/types";
 import type { EstimationOutcome, EstimationValues } from "@/lib/estimation";
@@ -9,7 +9,7 @@ import { EstimationPanel } from "./estimation-panel";
 
 type Tab = "mission" | "learn" | "deep-dive";
 
-export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummary, hintCount, onRevealHint, estimation, check, remix, attempts, hidden, onOpenReading, defaultTab }: {
+export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummary, hintCount, onRevealHint, estimation, check, remix, blankStart, attempts, hidden, onOpenReading, defaultTab }: {
   lesson: Lesson;
   objectiveChecks: boolean[];
   status: { text: string; warning: boolean };
@@ -27,6 +27,8 @@ export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummar
   /** null on written lessons: there is nothing to simulate, so no assessment line and no Check button. */
   check: { label: string; disabled: boolean; passed: boolean; running: boolean; onClick: () => void } | null;
   remix: { active: boolean; factor?: number; preparing: boolean; onRemix: () => void; onReset: () => void } | null;
+  /** v2.2: start this sim from a traffic-only canvas instead of the starter architecture. */
+  blankStart?: { active: boolean; disabled: boolean; onStart: () => void; onRestore: () => void } | null;
   attempts: number;
   hidden?: boolean;
   onOpenReading?: () => void;
@@ -69,6 +71,19 @@ export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummar
             <div className="mission-rules"><ShieldCheck size={14} /><span>{assessmentSummary}</span></div>
             <p className={`assessment-status ${status.warning ? "assessment-warning" : ""}`} role="status">{status.text}</p>
           </>}
+
+          {blankStart && <div className="blank-start">
+            {blankStart.active ? <>
+              <span className="blank-start-badge"><Eraser size={12} />Blank canvas</span>
+              <p>You are building this system from a traffic-only canvas. The starter architecture and the reference design stay hidden; only the objectives are graded.</p>
+              <button className="text-button" onClick={blankStart.onRestore}><RotateCcw size={12} />Restore the starter architecture</button>
+            </> : <>
+              <button className="button full-width" onClick={blankStart.onStart} disabled={blankStart.disabled}>
+                <Eraser size={14} />Start from a blank canvas
+              </button>
+              <p>{blankStart.disabled ? "Available before the first check on this lesson." : "Wipe the starter design and build this system yourself, from traffic alone."}</p>
+            </>}
+          </div>}
 
           {estimation.prompts.length > 0 && <EstimationPanel prompts={estimation.prompts} values={estimation.values} onChange={estimation.onChange} locked={estimation.locked} outcomes={estimation.outcomes} />}
 

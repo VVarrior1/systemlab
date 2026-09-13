@@ -9,12 +9,16 @@ import {
   Lock,
   Mic,
   MessageSquareText,
+  Radio,
   Send,
   Sparkles,
   Timer,
+  TriangleAlert,
+  User,
   XCircle,
 } from "lucide-react";
-import type { Lesson, RubricItem } from "@/lib/types";
+import type { EstimationId, Lesson, RubricItem } from "@/lib/types";
+import type { EstimationOutcome } from "@/lib/estimation";
 import { applyPenalties, type Deduction } from "@/lib/defense-scoring";
 
 // ---------------------------------------------------------------- shuffle
@@ -65,6 +69,20 @@ function formatClock(seconds: number): string {
   const m = Math.floor(clamped / 60);
   const s = clamped % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/** Signed relative error per estimation prompt: (predicted - actual) / max(actual, 1).
+ *  Clamped to +/-10 (a 10x miss) because that is the range persistence accepts, and a wilder
+ *  outlier would otherwise make the whole progress record unsaveable. */
+export function estimationBiasFrom(outcomes: EstimationOutcome[] | null | undefined): Partial<Record<EstimationId, number>> | undefined {
+  if (!outcomes || outcomes.length === 0) return undefined;
+  const bias: Partial<Record<EstimationId, number>> = {};
+  for (const outcome of outcomes) {
+    const denominator = Math.max(Math.abs(outcome.actual), 1);
+    const value = (outcome.predicted - outcome.actual) / denominator;
+    bias[outcome.id] = Number.isFinite(value) ? Math.max(-10, Math.min(10, value)) : 0;
+  }
+  return bias;
 }
 
 // ---------------------------------------------------------------- speech recognition
@@ -167,7 +185,17 @@ function useStageClock(key: string, durationSeconds: number, active: boolean) {
 // ---------------------------------------------------------------- grading types
 
 interface GradedItem { id: string; score: 0 | 1 | 2; note: string }
-interface GradedResult { mode: "graded"; items: GradedItem[]; total: number; critique: string }
+interface GradedResult {
+  mode?: "graded";
+  items: GradedItem[];
+  total: number;
+  critique: string;
+  /** v2.2 live interviewer only. */
+  recoveryScore?: number;
+  techScore?: number;
+  dataModelScore?: number;
+  weakConcepts?: string[];
+}
 type GradeState =
   | { status: "idle" }
   | { status: "loading" }
@@ -176,29 +204,68 @@ type GradeState =
 
 interface FollowUpAnswer { question: string; answer: string }
 
+// ---------------------------------------------------------------- live interviewer
+
+export type InterviewIntent = "probe" | "pushback" | "escalate" | "clarify";
+export interface InterviewTurn { role: "interviewer" | "candidate"; text: string; intent?: InterviewIntent }
+/** The canvas-and-run snapshot the playground hands to the interviewer.
+ *  Mirrors the server-side InterviewContext in lib/interview.ts; kept local so no server module
+ *  reaches the client bundle. Anything the route rejects becomes a 400, which falls back to static. */
+export interface InterviewContext {
+  architecture: string;
+  result: string;
+  techChoices?: { nodeId: string; label: string; kind: string; technology: string; why: string }[];
+  dataModel?: string;
+  estimation?: string;
+  blankCanvas?: boolean;
+}
+
+const intentLabels: Record<InterviewIntent, string> = {
+  probe: "Probe",
+  pushback: "Pushback",
+  escalate: "Escalate",
+  clarify: "Clarify",
+};
+
 const DESIGN_MIN_WORDS = 60;
 const FOLLOWUP_MIN_WORDS = 20;
+const TURN_MIN_WORDS = 15;
 const PASS_THRESHOLD = 60;
 const DESIGN_CLOCK_SECONDS = 120;
 const FOLLOWUP_CLOCK_SECONDS = 60;
+const TURN_CLOCK_SECONDS = 60;
+const MAX_ROUNDS = 5;
 
-export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount, onComplete, onActive, remixActive }: {
+export interface DefenseOutcome {
+  reflectionAttempts: number;
+  defenseScore: number;
+  defenseMode: "graded" | "self";
+  overtimeSeconds: number;
+  followUpMode: "dynamic" | "static";
+  /** v2.2 */
+  interviewRounds: number;
+  recoveryScore?: number;
+  weakConcepts?: string[];
+  estimationBias?: Partial<Record<EstimationId, number>>;
+}
+
+export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount, onComplete, onActive, remixActive, interviewContext, wallClockOvertime, estimationOutcomes }: {
   lesson: Lesson;
   nextLesson?: { id: string; title: string };
   enabled: boolean;
   completed: boolean;
   /** Hints revealed so far this lesson, used to compute interview-mode penalties. */
   hintCount?: number;
-  onComplete: (outcome: {
-    reflectionAttempts: number;
-    defenseScore: number;
-    defenseMode: "graded" | "self";
-    overtimeSeconds: number;
-    followUpMode: "dynamic" | "static";
-  }) => void;
+  onComplete: (outcome: DefenseOutcome) => void;
   /** Lets the parent dim the canvas column while the defense is in progress. */
   onActive?: (active: boolean) => void;
   remixActive?: boolean;
+  /** v2.2: the design snapshot the live interviewer reads. Without it the static follow-ups are used. */
+  interviewContext?: InterviewContext;
+  /** v2.2: seconds over the single lesson wall clock, folded into the deductions. */
+  wallClockOvertime?: number;
+  /** v2.2: used to report the signed estimation bias with the completion. */
+  estimationOutcomes?: EstimationOutcome[] | null;
 }) {
   // Reflection state
   const [attempt, setAttempt] = useState(1);
@@ -223,13 +290,15 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
   const [gradeError, setGradeError] = useState<string | null>(null);
   const [totalOvertime, setTotalOvertime] = useState(0);
 
-  const [finished, setFinished] = useState<{
-    reflectionAttempts: number;
-    defenseScore: number;
-    defenseMode: "graded" | "self";
-    overtimeSeconds: number;
-    followUpMode: "dynamic" | "static";
-  } | null>(null);
+  // v2.2 live interviewer
+  const [live, setLive] = useState(false);
+  const [transcript, setTranscript] = useState<InterviewTurn[]>([]);
+  const [turnAnswer, setTurnAnswer] = useState("");
+  const [turnLoading, setTurnLoading] = useState(false);
+  const [interviewDone, setInterviewDone] = useState(false);
+  const [interviewNote, setInterviewNote] = useState<string | null>(null);
+
+  const [finished, setFinished] = useState<DefenseOutcome | null>(null);
   const completedOnce = useRef(false);
 
   const inDefense = reflectionSolved && !finished;
@@ -253,16 +322,46 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
     setSelfRevised(false);
     setGradeError(null);
     setTotalOvertime(0);
+    setLive(false);
+    setTranscript([]);
+    setTurnAnswer("");
+    setTurnLoading(false);
+    setInterviewDone(false);
+    setInterviewNote(null);
     setFinished(null);
     completedOnce.current = false;
   }, [lesson.id]);
 
-  const designClock = useStageClock(`${lesson.id}:design`, DESIGN_CLOCK_SECONDS, interviewMode && inDefense && !designConfirmed);
-  const followUpClock = useStageClock(`${lesson.id}:followup:${revealedCount}`, FOLLOWUP_CLOCK_SECONDS, interviewMode && inDefense && designConfirmed && revealedCount > 0 && revealedCount <= followUpQuestions.length && grade.status !== "graded" && grade.status !== "self");
+  const interviewerTurns = transcript.filter((turn) => turn.role === "interviewer").length;
+  const awaitingAnswer = live && !interviewDone && !turnLoading && transcript.length > 0 && transcript[transcript.length - 1]!.role === "interviewer";
+  const graded = grade.status === "graded" || grade.status === "self";
 
-  function finish(outcome: { reflectionAttempts: number; defenseScore: number; defenseMode: "graded" | "self" }) {
-    const overtimeSeconds = totalOvertime + designClock.overtime + followUpClock.overtime;
-    const result = { ...outcome, overtimeSeconds, followUpMode };
+  const designClock = useStageClock(`${lesson.id}:design`, DESIGN_CLOCK_SECONDS, interviewMode && inDefense && !designConfirmed);
+  const followUpClock = useStageClock(`${lesson.id}:followup:${revealedCount}`, FOLLOWUP_CLOCK_SECONDS, interviewMode && inDefense && !live && designConfirmed && revealedCount > 0 && revealedCount <= followUpQuestions.length && !graded);
+  const turnClock = useStageClock(`${lesson.id}:turn:${transcript.length}`, TURN_CLOCK_SECONDS, interviewMode && inDefense && awaitingAnswer && !graded);
+
+  function currentOvertime(): number {
+    return totalOvertime + designClock.overtime + (live ? turnClock.overtime : followUpClock.overtime);
+  }
+
+  function penalties(total: number, reflectionAttempts: number, overtimeSeconds: number) {
+    return applyPenalties(total, {
+      hintsUsed: hintCount ?? 0,
+      reflectionAttempts,
+      overtimeSeconds,
+      wallClockOvertime: wallClockOvertime ?? 0,
+    });
+  }
+
+  function finish(outcome: { reflectionAttempts: number; defenseScore: number; defenseMode: "graded" | "self"; recoveryScore?: number; weakConcepts?: string[] }) {
+    const overtimeSeconds = currentOvertime();
+    const result: DefenseOutcome = {
+      ...outcome,
+      overtimeSeconds,
+      followUpMode: live ? "dynamic" : followUpMode,
+      interviewRounds: interviewerTurns,
+      ...(estimationBiasFrom(estimationOutcomes) ? { estimationBias: estimationBiasFrom(estimationOutcomes) } : {}),
+    };
     setFinished(result);
     if (!completedOnce.current) {
       completedOnce.current = true;
@@ -282,13 +381,38 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
     setChoice(null);
   }
 
-  async function submitDesign() {
-    setTotalOvertime((o) => o + designClock.overtime);
-    setDesignConfirmed(true);
-    if (!interviewMode) {
-      if (lesson.defense.followUps.length > 0) setRevealedCount(1);
-      return;
+  // -------------------------------------------------------------- live interviewer calls
+
+  /** One interviewer turn. Returns null on 501, any other error, or a malformed body: the caller falls back. */
+  async function requestTurn(turns: InterviewTurn[]): Promise<{ question: string; intent: InterviewIntent; round: number; done: boolean } | null> {
+    if (!interviewContext) return null;
+    try {
+      const res = await fetch("/api/interview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lessonId: lesson.id,
+          stage: "turn",
+          transcript: turns.map((turn) => ({ role: turn.role, text: turn.text })),
+          context: interviewContext,
+        }),
+      });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { question?: string; intent?: InterviewIntent; round?: number; done?: boolean };
+      if (!body || typeof body.question !== "string" || body.question.trim().length === 0) return null;
+      return {
+        question: body.question,
+        intent: body.intent && body.intent in intentLabels ? body.intent : "probe",
+        round: typeof body.round === "number" ? body.round : turns.filter((turn) => turn.role === "interviewer").length + 1,
+        done: body.done === true,
+      };
+    } catch {
+      return null;
     }
+  }
+
+  /** The pre-v2.2 path: dynamic follow-ups from /api/grade, or the lesson's static list. */
+  async function startStaticFollowUps() {
     setFollowUpsLoading(true);
     try {
       const res = await fetch("/api/grade", {
@@ -320,29 +444,91 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
     }
   }
 
+  async function submitDesign() {
+    setTotalOvertime((o) => o + designClock.overtime);
+    setDesignConfirmed(true);
+    if (!interviewMode) {
+      if (lesson.defense.followUps.length > 0) setRevealedCount(1);
+      return;
+    }
+    setFollowUpsLoading(true);
+    const opening: InterviewTurn[] = [{ role: "candidate", text: design }];
+    const first = await requestTurn(opening);
+    setFollowUpsLoading(false);
+    if (first) {
+      setLive(true);
+      setFollowUpMode("dynamic");
+      setTranscript([...opening, { role: "interviewer", text: first.question, intent: first.intent }]);
+      setInterviewDone(first.done || first.round >= MAX_ROUNDS);
+      return;
+    }
+    await startStaticFollowUps();
+  }
+
+  async function sendTurnAnswer() {
+    if (wordCount(turnAnswer) < TURN_MIN_WORDS || turnLoading) return;
+    const answered: InterviewTurn[] = [...transcript, { role: "candidate", text: turnAnswer.trim() }];
+    setTranscript(answered);
+    setTurnAnswer("");
+    setTotalOvertime((o) => o + turnClock.overtime);
+    if (interviewDone || interviewerTurns >= MAX_ROUNDS) {
+      setInterviewDone(true);
+      return;
+    }
+    setTurnLoading(true);
+    const next = await requestTurn(answered);
+    setTurnLoading(false);
+    if (!next) {
+      setInterviewDone(true);
+      setInterviewNote("The interviewer stopped responding. Submit what you have for grading.");
+      return;
+    }
+    setTranscript([...answered, { role: "interviewer", text: next.question, intent: next.intent }]);
+    if (next.done || next.round >= MAX_ROUNDS) setInterviewDone(true);
+  }
+
   function revealNextFollowUp() {
     setTotalOvertime((o) => o + followUpClock.overtime);
     setRevealedCount((count) => Math.min(count + 1, followUpQuestions.length));
   }
 
   async function submitForGrading() {
-    setTotalOvertime((o) => o + followUpClock.overtime);
+    setTotalOvertime((o) => o + (live ? turnClock.overtime : followUpClock.overtime));
     setGrade({ status: "loading" });
     setGradeError(null);
     try {
-      const answers: FollowUpAnswer[] = followUpQuestions.map((question, index) => ({ question, answer: followUps[index] ?? "" }));
-      const res = await fetch("/api/grade", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lessonId: lesson.id, stage: "grade", answers: { design, followUps: answers } }),
-      });
+      const res = live
+        ? await fetch("/api/interview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lessonId: lesson.id,
+            stage: "grade",
+            transcript: transcript.map((turn) => ({ role: turn.role, text: turn.text })),
+            context: interviewContext,
+          }),
+        })
+        : await fetch("/api/grade", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lessonId: lesson.id,
+            stage: "grade",
+            answers: { design, followUps: followUpQuestions.map((question, index): FollowUpAnswer => ({ question, answer: followUps[index] ?? "" })) },
+          }),
+        });
       if (res.ok) {
         const body = (await res.json()) as GradedResult;
         setGrade({ status: "graded", result: body });
-        const overtimeSeconds = totalOvertime + designClock.overtime + followUpClock.overtime;
-        const penalized = applyPenalties(body.total, { hintsUsed: hintCount ?? 0, reflectionAttempts: attempt, overtimeSeconds });
+        const penalized = penalties(body.total, attempt, currentOvertime());
         if (penalized.total >= PASS_THRESHOLD) {
-          finish({ reflectionAttempts: attempt, defenseScore: penalized.total, defenseMode: "graded" });
+          finish({
+            reflectionAttempts: attempt,
+            defenseScore: penalized.total,
+            defenseMode: "graded",
+            ...(typeof body.recoveryScore === "number" ? { recoveryScore: body.recoveryScore } : {}),
+            ...(Array.isArray(body.weakConcepts) ? { weakConcepts: body.weakConcepts } : {}),
+          });
         }
         return;
       }
@@ -384,8 +570,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
   function finalizeSelfAssessment() {
     const rubric = lesson.defense.rubric;
     const total = rubric.reduce((sum, item) => (selfChecked[item.id] ? sum + item.weight : sum), 0);
-    const overtimeSeconds = totalOvertime + designClock.overtime + followUpClock.overtime;
-    const penalized = applyPenalties(Math.round(total), { hintsUsed: hintCount ?? 0, reflectionAttempts: attempt, overtimeSeconds });
+    const penalized = penalties(Math.round(total), attempt, currentOvertime());
     finish({ reflectionAttempts: attempt, defenseScore: penalized.total, defenseMode: "self" });
   }
 
@@ -403,7 +588,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
   if (finished || (completed && !reflectionSolved)) {
     const outcome = finished;
     const finalDeductions = outcome && grade.status === "graded"
-      ? applyPenalties(grade.result.total, { hintsUsed: hintCount ?? 0, reflectionAttempts: outcome.reflectionAttempts, overtimeSeconds: outcome.overtimeSeconds }).deductions
+      ? penalties(grade.result.total, outcome.reflectionAttempts, outcome.overtimeSeconds).deductions
       : [];
     return <div className="defense-stage">
       <div className="reflection-section completion-section">
@@ -416,8 +601,10 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
           <p className="reflection-feedback">{lesson.reflection.explanation}</p>
           {grade.status === "graded" && <p className="defense-critique">{grade.result.critique}</p>}
           {grade.status === "self" && <p className="defense-critique">Self-assessed against the model answer and rubric.</p>}
+          {outcome.interviewRounds > 0 && <p className="defense-interview-summary">{outcome.interviewRounds} interviewer round{outcome.interviewRounds === 1 ? "" : "s"}{outcome.recoveryScore !== undefined ? ` - recovery ${outcome.recoveryScore}/2` : ""}.</p>}
+          {outcome.weakConcepts && outcome.weakConcepts.length > 0 && <WeakConcepts ids={outcome.weakConcepts} rubric={lesson.defense.rubric} />}
           {finalDeductions.length > 0 && <DeductionsList deductions={finalDeductions} />}
-        </> : <p className="reflection-feedback">You've already completed this lesson. Revisit the mission any time — your reflection and defense answers aren't re-shown here.</p>}
+        </> : <p className="reflection-feedback">You&apos;ve already completed this lesson. Revisit the mission any time — your reflection and defense answers aren&apos;t re-shown here.</p>}
         {remixActive && <p className="defense-remix-note">Remix objectives completed.</p>}
         <div className="defense-next">
           {nextLesson ? <Link className="button primary" href={`/learn/${nextLesson.id}`}>Next: {nextLesson.title}<ArrowRight size={15} /></Link> : <Link className="button primary" href="/learn">Back to learning path<ArrowRight size={15} /></Link>}
@@ -427,8 +614,9 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
   }
 
   const { options, correctIndex } = shuffledOptions(lesson, attempt);
-  const currentClock = designConfirmed ? followUpClock : designClock;
-  const showClock = interviewMode && reflectionSolved && (!designConfirmed || revealedCount > 0);
+  const currentClock = !designConfirmed ? designClock : live ? turnClock : followUpClock;
+  const showClock = interviewMode && reflectionSolved && !graded && (!designConfirmed || (live ? awaitingAnswer : revealedCount > 0));
+  const canGradeLive = live && (interviewDone || interviewerTurns >= MAX_ROUNDS) && !awaitingAnswer && !turnLoading;
 
   return <div className="defense-stage">
     <div className="reflection-section">
@@ -472,6 +660,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
       <div className="reflection-heading">
         <span className="reflection-icon"><ClipboardCheck size={17} /></span>
         <span>Defend your design</span>
+        {live && <span className="defense-live-badge"><Radio size={12} />Live interviewer</span>}
         <label className="defense-interview-toggle">
           <input type="checkbox" checked={interviewMode} disabled={designConfirmed} onChange={(e) => setInterviewMode(e.target.checked)} />
           <span>Interview mode</span>
@@ -495,8 +684,65 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
           <SpeechInput onTranscript={(text, final) => setDesign((prev) => (final ? `${prev}${prev && !prev.endsWith(" ") ? " " : ""}${text}` : prev))} />
           <div className="defense-word-count"><span className={wordCount(design) >= DESIGN_MIN_WORDS ? "ok" : ""}>{wordCount(design)} / {DESIGN_MIN_WORDS} words</span></div>
         </div>
-        <button type="button" className="button primary" disabled={wordCount(design) < DESIGN_MIN_WORDS || followUpsLoading} onClick={submitDesign}>{followUpsLoading ? "Preparing follow-ups..." : "Continue"}<ChevronRight size={14} /></button>
-      </div> : <>
+        <button type="button" className="button primary" disabled={wordCount(design) < DESIGN_MIN_WORDS || followUpsLoading} onClick={submitDesign}>{followUpsLoading ? "Calling the interviewer..." : "Continue"}<ChevronRight size={14} /></button>
+      </div> : live ? <>
+        {/* ------------------------------------------------ live interview */}
+        <div className="interview-transcript">
+          {transcript.map((turn, index) => <div key={index} className={`interview-turn ${turn.role}`}>
+            <span className="interview-avatar">{turn.role === "interviewer" ? <MessageSquareText size={13} /> : <User size={13} />}</span>
+            <div>
+              <div className="interview-turn-head">
+                <span className="interview-role">{turn.role === "interviewer" ? "Interviewer" : "You"}</span>
+                {turn.role === "interviewer" && turn.intent && <span className={`interview-intent ${turn.intent}`}>{intentLabels[turn.intent]}</span>}
+                {turn.role === "interviewer" && <span className="interview-round">Round {transcript.slice(0, index + 1).filter((t) => t.role === "interviewer").length} of {MAX_ROUNDS}</span>}
+              </div>
+              <p>{turn.text}</p>
+            </div>
+          </div>)}
+          {turnLoading && <div className="interview-turn interviewer pending">
+            <span className="interview-avatar"><MessageSquareText size={13} /></span>
+            <div><div className="interview-turn-head"><span className="interview-role">Interviewer</span></div><p className="interview-thinking">Thinking about your answer...</p></div>
+          </div>}
+        </div>
+
+        {interviewNote && <p className="defense-grade-error"><TriangleAlert size={12} /> {interviewNote}</p>}
+
+        {awaitingAnswer && !graded && <div className="defense-answer interview-reply">
+          <label className="field-label" htmlFor="interview-reply">Your reply</label>
+          <textarea
+            id="interview-reply"
+            rows={4}
+            value={turnAnswer}
+            onChange={(e) => setTurnAnswer(e.target.value)}
+            placeholder="Answer the interviewer..."
+          />
+          <div className="defense-answer-tools">
+            <SpeechInput onTranscript={(text, final) => setTurnAnswer((prev) => (final ? `${prev}${prev && !prev.endsWith(" ") ? " " : ""}${text}` : prev))} />
+            <div className="defense-word-count"><span className={wordCount(turnAnswer) >= TURN_MIN_WORDS ? "ok" : ""}>{wordCount(turnAnswer)} / {TURN_MIN_WORDS} words</span></div>
+          </div>
+          <button type="button" className="button primary" disabled={wordCount(turnAnswer) < TURN_MIN_WORDS} onClick={sendTurnAnswer}>Send reply<Send size={14} /></button>
+        </div>}
+
+        {canGradeLive && !graded && <button type="button" className="button primary" disabled={grade.status === "loading"} onClick={submitForGrading}>
+          {grade.status === "loading" ? "Grading..." : "Finish and grade the interview"}<Send size={14} />
+        </button>}
+
+        <GradeViews
+          grade={grade}
+          lesson={lesson}
+          attempt={attempt}
+          overtimeSeconds={currentOvertime()}
+          penalties={penalties}
+          gradeError={gradeError}
+          selfChecked={selfChecked}
+          selfRevealed={selfRevealed}
+          selfRevised={selfRevised}
+          onToggleRubric={toggleRubricItem}
+          onConfirmSelf={confirmSelfAssessment}
+          onRevise={reviseDesign}
+        />
+      </> : <>
+        {/* ------------------------------------------------ static follow-ups */}
         <div className="defense-answer submitted">
           <span className="field-label">Your answer</span>
           <p>{design}</p>
@@ -527,7 +773,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
           </div>;
         })}
 
-        {revealedCount >= followUpQuestions.length && grade.status !== "self" && grade.status !== "graded" && <button
+        {revealedCount >= followUpQuestions.length && !graded && <button
           type="button"
           className="button primary"
           disabled={grade.status === "loading" || (wordCount(followUps[followUps.length - 1] ?? "") < FOLLOWUP_MIN_WORDS && followUpQuestions.length > 0)}
@@ -536,55 +782,102 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
           {grade.status === "loading" ? "Grading..." : "Submit for grading"}<Send size={14} />
         </button>}
 
-        {grade.status === "graded" && <div className="defense-grade">
-          {(() => {
-            const overtimeSeconds = totalOvertime + designClock.overtime + followUpClock.overtime;
-            const penalized = applyPenalties(grade.result.total, { hintsUsed: hintCount ?? 0, reflectionAttempts: attempt, overtimeSeconds });
-            return <>
-              <div className="defense-grade-header">
-                <span className={penalized.total >= PASS_THRESHOLD ? "defense-total pass" : "defense-total fail"}>{penalized.total}/100</span>
-                <span className={penalized.total >= PASS_THRESHOLD ? "defense-pass-line pass" : "defense-pass-line fail"}>{penalized.total >= PASS_THRESHOLD ? "Passed" : "Below the 60 pass line"}</span>
-              </div>
-              {penalized.deductions.length > 0 && <DeductionsList deductions={penalized.deductions} />}
-              <ul className="defense-rubric-results">
-                {grade.result.items.map((item) => {
-                  const rubricItem = lesson.defense.rubric.find((r) => r.id === item.id);
-                  return <li key={item.id}>
-                    <span className="defense-rubric-score">{item.score}/2</span>
-                    <div><strong>{rubricItem?.criterion ?? item.id}</strong><p>{item.note}</p></div>
-                  </li>;
-                })}
-              </ul>
-              <p className="defense-critique">{grade.result.critique}</p>
-              {penalized.total < PASS_THRESHOLD && <button type="button" className="button" onClick={reviseDesign}>Revise and resubmit<ChevronRight size={14} /></button>}
-            </>;
-          })()}
-        </div>}
-
-        {gradeError && <p className="defense-grade-error">{gradeError}</p>}
-
-        {grade.status === "self" && <div className="defense-self-assessment">
-          <p className="defense-self-intro">{selfRevealed
-            ? "Compare your answer with the model answer below. You may revise your ticks once, then confirm."
-            : "Grading is unavailable right now. Tick every rubric item you believe you covered before you see the model answer — this stays a blind self-assessment."}</p>
-          {selfRevealed && <details className="defense-model-answer" open>
-            <summary>Model answer</summary>
-            <p>{lesson.defense.modelAnswer}</p>
-          </details>}
-          <ul className="defense-rubric-checklist">
-            {lesson.defense.rubric.map((item: RubricItem) => <li key={item.id}>
-              <label>
-                <input type="checkbox" checked={!!selfChecked[item.id]} onChange={() => toggleRubricItem(item.id)} disabled={selfRevealed && selfRevised} />
-                <span>{item.criterion}</span>
-                <span className="defense-rubric-weight">{item.weight}</span>
-              </label>
-            </li>)}
-          </ul>
-          <div className="defense-self-total">Total: {lesson.defense.rubric.reduce((sum, item) => (selfChecked[item.id] ? sum + item.weight : sum), 0)}/100</div>
-          {!(selfRevealed && selfRevised) && <button type="button" className="button primary" onClick={confirmSelfAssessment}>{!selfRevealed ? "Confirm blind assessment" : "Confirm final assessment"}<CheckCircle2 size={14} /></button>}
-        </div>}
+        <GradeViews
+          grade={grade}
+          lesson={lesson}
+          attempt={attempt}
+          overtimeSeconds={currentOvertime()}
+          penalties={penalties}
+          gradeError={gradeError}
+          selfChecked={selfChecked}
+          selfRevealed={selfRevealed}
+          selfRevised={selfRevised}
+          onToggleRubric={toggleRubricItem}
+          onConfirmSelf={confirmSelfAssessment}
+          onRevise={reviseDesign}
+        />
       </>}
     </div>}
+  </div>;
+}
+
+// ---------------------------------------------------------------- grade + self-assessment views
+
+function GradeViews({ grade, lesson, attempt, overtimeSeconds, penalties, gradeError, selfChecked, selfRevealed, selfRevised, onToggleRubric, onConfirmSelf, onRevise }: {
+  grade: GradeState;
+  lesson: Lesson;
+  attempt: number;
+  overtimeSeconds: number;
+  penalties: (total: number, reflectionAttempts: number, overtimeSeconds: number) => { total: number; deductions: Deduction[] };
+  gradeError: string | null;
+  selfChecked: Record<string, boolean>;
+  selfRevealed: boolean;
+  selfRevised: boolean;
+  onToggleRubric: (id: string) => void;
+  onConfirmSelf: () => void;
+  onRevise: () => void;
+}) {
+  return <>
+    {grade.status === "graded" && (() => {
+      const result = grade.result;
+      const penalized = penalties(result.total, attempt, overtimeSeconds);
+      return <div className="defense-grade">
+        <div className="defense-grade-header">
+          <span className={penalized.total >= PASS_THRESHOLD ? "defense-total pass" : "defense-total fail"}>{penalized.total}/100</span>
+          <span className={penalized.total >= PASS_THRESHOLD ? "defense-pass-line pass" : "defense-pass-line fail"}>{penalized.total >= PASS_THRESHOLD ? "Passed" : "Below the 60 pass line"}</span>
+        </div>
+        {(result.recoveryScore !== undefined || result.techScore !== undefined || result.dataModelScore !== undefined) && <div className="defense-score-tiles">
+          {result.recoveryScore !== undefined && <div className="defense-score-tile"><span>Recovery under pushback</span><strong>{result.recoveryScore}/2</strong></div>}
+          {result.techScore !== undefined && <div className="defense-score-tile"><span>Technology choices</span><strong>{result.techScore}/2</strong></div>}
+          {result.dataModelScore !== undefined && <div className="defense-score-tile"><span>Data model</span><strong>{result.dataModelScore}/2</strong></div>}
+        </div>}
+        {penalized.deductions.length > 0 && <DeductionsList deductions={penalized.deductions} />}
+        <ul className="defense-rubric-results">
+          {result.items.map((item) => {
+            const rubricItem = lesson.defense.rubric.find((r) => r.id === item.id);
+            return <li key={item.id}>
+              <span className="defense-rubric-score">{item.score}/2</span>
+              <div><strong>{rubricItem?.criterion ?? item.id}</strong><p>{item.note}</p></div>
+            </li>;
+          })}
+        </ul>
+        <p className="defense-critique">{result.critique}</p>
+        {result.weakConcepts && result.weakConcepts.length > 0 && <WeakConcepts ids={result.weakConcepts} rubric={lesson.defense.rubric} />}
+        {penalized.total < PASS_THRESHOLD && <button type="button" className="button" onClick={onRevise}>Revise and resubmit<ChevronRight size={14} /></button>}
+      </div>;
+    })()}
+
+    {gradeError && <p className="defense-grade-error">{gradeError}</p>}
+
+    {grade.status === "self" && <div className="defense-self-assessment">
+      <p className="defense-self-intro">{selfRevealed
+        ? "Compare your answer with the model answer below. You may revise your ticks once, then confirm."
+        : "Grading is unavailable right now. Tick every rubric item you believe you covered before you see the model answer — this stays a blind self-assessment."}</p>
+      {selfRevealed && <details className="defense-model-answer" open>
+        <summary>Model answer</summary>
+        <p>{lesson.defense.modelAnswer}</p>
+      </details>}
+      <ul className="defense-rubric-checklist">
+        {lesson.defense.rubric.map((item: RubricItem) => <li key={item.id}>
+          <label>
+            <input type="checkbox" checked={!!selfChecked[item.id]} onChange={() => onToggleRubric(item.id)} disabled={selfRevealed && selfRevised} />
+            <span>{item.criterion}</span>
+            <span className="defense-rubric-weight">{item.weight}</span>
+          </label>
+        </li>)}
+      </ul>
+      <div className="defense-self-total">Total: {lesson.defense.rubric.reduce((sum, item) => (selfChecked[item.id] ? sum + item.weight : sum), 0)}/100</div>
+      {!(selfRevealed && selfRevised) && <button type="button" className="button primary" onClick={onConfirmSelf}>{!selfRevealed ? "Confirm blind assessment" : "Confirm final assessment"}<CheckCircle2 size={14} /></button>}
+    </div>}
+  </>;
+}
+
+function WeakConcepts({ ids, rubric }: { ids: string[]; rubric: RubricItem[] }) {
+  return <div className="defense-weak-concepts">
+    <span className="field-label">Come back to these</span>
+    <ul>
+      {ids.map((id) => <li key={id}>{rubric.find((item) => item.id === id)?.criterion ?? id}</li>)}
+    </ul>
   </div>;
 }
 

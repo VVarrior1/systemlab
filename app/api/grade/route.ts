@@ -1,6 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { getLesson } from "../../../lib/curriculum";
-import { gradeWithClaude, generateFollowUps, validateAnswers, validateDesignText } from "../../../lib/grading";
+import { gradeWithGemini, generateFollowUps, validateAnswers, validateDesignText } from "../../../lib/grading";
+import { GRADER_MODEL, hasGeminiKey } from "../../../lib/gemini";
 
 export const runtime = "nodejs";
 
@@ -23,7 +23,10 @@ function clientIp(req: Request): string {
 }
 
 export async function GET(): Promise<Response> {
-  return Response.json({ mode: process.env.ANTHROPIC_API_KEY ? "graded" : "self" }, { status: 200 });
+  if (!hasGeminiKey()) {
+    return Response.json({ mode: "self" }, { status: 200 });
+  }
+  return Response.json({ mode: "graded", provider: "gemini", model: GRADER_MODEL }, { status: 200 });
 }
 
 export async function POST(req: Request): Promise<Response> {
@@ -67,7 +70,7 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ error: message }, { status: 400 });
     }
 
-    if (!process.env.ANTHROPIC_API_KEY) {
+    if (!hasGeminiKey()) {
       return Response.json({ mode: "self", followUps: lesson.defense.followUps }, { status: 501 });
     }
 
@@ -75,11 +78,8 @@ export async function POST(req: Request): Promise<Response> {
       const followUps = await generateFollowUps(lesson, design);
       return Response.json({ mode: "graded", followUps }, { status: 200 });
     } catch (error) {
-      if (error instanceof Anthropic.APIError) {
-        return Response.json({ error: `Interviewer service error: ${error.message}` }, { status: 502 });
-      }
       const message = error instanceof Error ? error.message : "Follow-up generation failed.";
-      return Response.json({ error: message }, { status: 502 });
+      return Response.json({ error: `Interviewer service error: ${message}` }, { status: 502 });
     }
   }
 
@@ -91,18 +91,15 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: message }, { status: 400 });
   }
 
-  if (!process.env.ANTHROPIC_API_KEY) {
+  if (!hasGeminiKey()) {
     return Response.json({ mode: "self" }, { status: 501 });
   }
 
   try {
-    const result = await gradeWithClaude(lesson, answers);
+    const result = await gradeWithGemini(lesson, answers);
     return Response.json(result, { status: 200 });
   } catch (error) {
-    if (error instanceof Anthropic.APIError) {
-      return Response.json({ error: `Grading service error: ${error.message}` }, { status: 502 });
-    }
     const message = error instanceof Error ? error.message : "Grading failed.";
-    return Response.json({ error: message }, { status: 502 });
+    return Response.json({ error: `Grading service error: ${message}` }, { status: 502 });
   }
 }

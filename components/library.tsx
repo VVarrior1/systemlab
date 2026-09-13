@@ -1,10 +1,11 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, Award, BookOpen, Check, Clock3, Download, Dumbbell, FileText, FlaskConical, FolderOpen, GitBranch, Layers3, MessagesSquare, Plus, Search, Trash2, Upload } from "lucide-react";
-import { chapters, chapterLessons, difficulties, lessons } from "@/lib/curriculum";
+import { ArrowRight, Award, BookOpen, Check, Clock3, Compass, Download, Dumbbell, FileText, FlaskConical, FolderOpen, GitBranch, Layers3, MessagesSquare, Plus, Search, TrendingUp, Trash2, Upload } from "lucide-react";
+import { chapters, chapterLessons, difficulties, getLesson, lessons } from "@/lib/curriculum";
 import type { Lesson, LessonKind } from "@/lib/types";
 import { isCurrentProgress } from "@/lib/assessment-version";
+import { estimationDiagnosis, masterySummary, reviewQueue, type ReviewReason } from "@/lib/mastery";
 import { deleteDesign, getPersistenceWarning, readDesigns, readGym, readProgress, saveDesign, validateDesign } from "@/lib/persistence";
 import type { ProgressRecord, SavedDesign } from "@/lib/types";
 import { Shell } from "./shell";
@@ -12,6 +13,12 @@ import { Modal, Tip } from "./ui";
 
 const kindLabels: Record<LessonKind, string> = { sim: "Sim", brief: "Brief", written: "Written" };
 const kindIcons: Record<LessonKind, typeof FlaskConical> = { sim: FlaskConical, brief: MessagesSquare, written: FileText };
+const reviewReasonLabels: Record<ReviewReason, string> = {
+  "low-defense": "Defense scored under 60",
+  "weak-concept": "Rubric gaps to revisit",
+  "spaced-review": "Due for spaced review",
+  "blank-canvas-next": "Try it from a blank canvas",
+};
 
 function KindBadge({ kind }: { kind: LessonKind }) {
   const Icon = kindIcons[kind];
@@ -49,6 +56,10 @@ export function Library({ view }: { view: "learn" | "designs" }) {
   const next = lessons.find((l) => !completed.has(l.id)) ?? lessons[0];
   const defenseScores = progress.filter((p) => isCurrentProgress(p) && p.defenseScore !== undefined).map((p) => p.defenseScore as number);
   const avgDefense = defenseScores.length ? Math.round(defenseScores.reduce((sum, score) => sum + score, 0) / defenseScores.length) : null;
+  const now = new Date();
+  const mastery = masterySummary(progress, lessons, now);
+  const queue = reviewQueue(progress, lessons, now).slice(0, 6);
+  const diagnosisLines = estimationDiagnosis(progress);
   const visibleLessons = lessons.filter((l) => `${l.title} ${l.concept} ${l.chapter}`.toLowerCase().includes(query.toLowerCase()) && (filter === "all" || filter === "completed" && completed.has(l.id) || filter === "remaining" && !completed.has(l.id)) && (tier === "all" || l.difficulty === tier) && (kind === "all" || l.kind === kind));
   const visibleDesigns = designs.filter((d) => d.name.toLowerCase().includes(query.toLowerCase()));
   const exportDesign = (design: SavedDesign) => { const url = URL.createObjectURL(new Blob([JSON.stringify(design, null, 2)], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = `${design.name.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "architecture"}.json`; link.click(); URL.revokeObjectURL(url); };
@@ -61,6 +72,7 @@ export function Library({ view }: { view: "learn" | "designs" }) {
   };
   return <Shell><header className="topbar"><div className="breadcrumb"><span>Personal workspace</span><ArrowRight size={12} /><span>{view === "learn" ? "Learning path" : "My designs"}</span></div><span className="topbar-note"><span className="tiny-dot" />Learning by doing</span></header><div className="library-page"><div className="library-heading"><div><span className="eyebrow">{view === "learn" ? "FROM FIRST REQUEST TO LAUNCH DAY" : "YOUR ARCHITECTURE COLLECTION"}</span><h1>{view === "learn" ? "Your learning path" : "My designs"}</h1><p>{view === "learn" ? `${lessons.length} lessons across ${chapters.length} chapters, from your first request to open design briefs.` : "Experiments worth keeping. Systems worth revisiting."}</p></div>{view === "learn" ? <Link className="button primary" href={`/learn/${next.id}`}>{progress.length ? "Continue learning" : "Start learning"}<ArrowRight size={16} /></Link> : <div className="library-heading-actions"><button className="button" onClick={() => upload.current?.click()}><Upload size={15} />Import</button><Link href="/sandbox" className="button primary"><Plus size={16} />New design</Link><input className="sr-only" ref={upload} type="file" accept=".json,application/json" aria-label="Import design file" onChange={(e) => importFile(e.target.files?.[0])} /></div>}</div>
     {view === "learn" && <div className="learning-overview"><div><span className="overview-icon"><BookOpen size={20} /></span><span><strong>{completed.size}<small> / {lessons.length}</small></strong><span>Lessons completed</span></span></div><div><span className="overview-icon violet"><Layers3 size={20} /></span><span><strong>{chapters.length}</strong><span>Chapters</span></span></div><div><span className="overview-icon amber"><Dumbbell size={20} /></span><span><strong>{gymSolved}</strong><span>Gym drills solved</span></span></div><div><span className="overview-icon blue"><Award size={20} /></span><span><strong>{avgDefense === null ? "—" : avgDefense}<small>{avgDefense === null ? "" : " / 100"}</small></strong><span>Average defense score</span></span></div><div className="learning-progress"><span>{lessons.length ? Math.round(completed.size / lessons.length * 100) : 0}% complete</span><div className="progress-track"><div style={{ width: `${lessons.length ? completed.size / lessons.length * 100 : 0}%` }} /></div></div></div>}
+    {view === "learn" && completed.size > 0 && <section className="review-panel"><div className="review-panel-heading"><span className="overview-icon violet"><TrendingUp size={18} /></span><div><span className="eyebrow">MASTERY</span><h2>Review next</h2></div><span className="review-panel-score">{mastery.score}<small> / 100</small></span></div>{queue.length > 0 && <ul className="review-queue">{queue.map((item, index) => { const reviewLesson = getLesson(item.lessonId); if (!reviewLesson) return null; return <li key={`${item.lessonId}-${item.reason}-${index}`}><Link href={`/learn/${item.lessonId}`}><span className="review-queue-title">{reviewLesson.title}</span><span className="review-queue-reason">{reviewReasonLabels[item.reason]}</span></Link><span className="review-queue-due">{item.due.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span></li>; })}</ul>}{!queue.length && <p className="review-panel-empty">Nothing due for review right now. Keep going.</p>}{diagnosisLines.length > 0 && <div className="review-diagnosis"><span className="eyebrow">DIAGNOSIS</span><ul>{diagnosisLines.map((line) => <li key={line}><Compass size={13} />{line}</li>)}</ul></div>}</section>}
     <div className="library-toolbar"><label className="search-field"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={view === "learn" ? "Find a lesson or concept..." : "Search your designs..."} aria-label={view === "learn" ? "Search lessons" : "Search designs"} /></label>{view === "learn" ? <div className="segmented" aria-label="Filter lessons">{[{ id: "all", text: "All lessons" }, { id: "remaining", text: "Remaining" }, { id: "completed", text: "Completed" }].map((item) => <button key={item.id} aria-pressed={filter === item.id} className={filter === item.id ? "active" : ""} onClick={() => setFilter(item.id)}>{item.text}</button>)}</div> : <span className="muted">{designs.length} saved {designs.length === 1 ? "design" : "designs"}</span>}</div>
     {view === "learn" && <div className="library-toolbar library-toolbar-secondary"><label className="filter-select"><span>Tier</span><select value={tier} onChange={(e) => setTier(e.target.value as typeof tier)} aria-label="Filter by tier"><option value="all">All tiers</option>{difficulties.map((d) => <option key={d} value={d}>{d}</option>)}</select></label><label className="filter-select"><span>Kind</span><select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)} aria-label="Filter by kind"><option value="all">All kinds</option><option value="sim">Sim</option><option value="brief">Brief</option><option value="written">Written</option></select></label><span className="muted">{visibleLessons.length} of {lessons.length} lessons</span></div>}
     {view === "learn" && reviewCount > 0 && <div className="model-update-note" role="status">{reviewCount} earlier {reviewCount === 1 ? "completion needs" : "completions need"} review after the v2 curriculum update. Saved designs are unchanged.</div>}

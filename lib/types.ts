@@ -231,6 +231,10 @@ export interface Lesson {
   remixable: boolean;
   /** Briefs: the starter is traffic-only and the reference is never shown; only objectives and runnability are graded. */
   blankCanvas?: boolean;
+  /** v2.2: node kinds the interviewer asks the learner to pick a concrete technology for (default: every kind in the design). */
+  techFocus?: NodeKind[];
+  /** v2.2: what the data-model stage asks for (entities, keys, query patterns). Briefs set this; sims may. */
+  dataModelPrompt?: string;
 }
 export interface SavedDesign {
   id: string;
@@ -257,4 +261,15 @@ export interface ProgressRecord {
   /** Seconds over the interview clocks across the defense. */
   overtimeSeconds?: number;
   followUpMode?: "dynamic" | "static";
+  /** v2.2 */
+  blankCanvas?: boolean;
+  interviewRounds?: number;
+  /** 0-2: did the candidate revise a position under pushback. */
+  recoveryScore?: number;
+  /** Rubric item ids scored 0 in the last graded defense. */
+  weakConcepts?: string[];
+  /** Signed relative estimation error per prompt, e.g. dbLoad: -0.35 means under-estimated by 35%. */
+  estimationBias?: Partial<Record<EstimationId, number>>;
+  /** Seconds over the single lesson wall clock. */
+  wallClockOvertime?: number;
 }

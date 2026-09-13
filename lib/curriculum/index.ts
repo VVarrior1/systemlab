@@ -12,8 +12,10 @@ import { chapter as multiRegion } from "./chapters/09-multi-region";
 import { chapter as dataSystems } from "./chapters/10-data-systems";
 import { chapter as toolkit } from "./chapters/11-toolkit";
 import { chapter as briefs } from "./chapters/12-briefs";
+import { chapter as briefsSystems } from "./chapters/13-briefs-systems";
+import { chapter as briefsProducts } from "./chapters/14-briefs-products";
 
-const files: ChapterFile[] = [foundations, performance, queues, caching, reliability, replication, partitioning, trafficControl, multiRegion, dataSystems, toolkit, briefs];
+const files: ChapterFile[] = [foundations, performance, queues, caching, reliability, replication, partitioning, trafficControl, multiRegion, dataSystems, toolkit, briefs, briefsSystems, briefsProducts];
 
 export const chapters: string[] = [...chapterTitles];
 

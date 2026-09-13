@@ -75,3 +75,36 @@
 @media (max-width:720px){
   .defense-section{margin-left:20px;margin-right:20px;padding:22px 0}
 }
+
+/* ---------------------------------------------- v2.2 live interviewer */
+
+.defense-live-badge{display:inline-flex;align-items:center;gap:5px;font:9px var(--mono);text-transform:uppercase;letter-spacing:.04em;color:var(--green-dark);background:var(--green-soft);border-radius:20px;padding:3px 9px}
+.defense-interview-summary{font-size:11px;color:var(--muted);margin:8px 0 0}
+
+.interview-transcript{max-width:820px;display:flex;flex-direction:column;gap:14px;margin-bottom:16px}
+.interview-turn{display:flex;gap:10px;align-items:flex-start}
+.interview-turn>div{flex:1;min-width:0;border:1px solid var(--line);border-radius:6px;padding:10px 13px;background:var(--bg)}
+.interview-turn.interviewer>div{background:var(--surface)}
+.interview-turn.candidate>div{background:var(--bg);border-style:dashed}
+.interview-turn p{margin:5px 0 0;font-size:12px;line-height:1.7;color:var(--ink);white-space:pre-wrap}
+.interview-avatar{flex:none;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:var(--green-soft);color:var(--green-dark)}
+.interview-turn.candidate .interview-avatar{background:#eef1f2;color:var(--muted)}
+.interview-turn-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.interview-role{font-size:11px;font-weight:600;color:var(--ink)}
+.interview-round{margin-left:auto;font:9px var(--mono);color:var(--muted)}
+.interview-intent{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 7px;border-radius:20px;color:var(--muted);background:#eef1f2}
+.interview-intent.probe{color:var(--green-dark);background:var(--green-soft)}
+.interview-intent.pushback{color:#a9663a;background:#fbf1e7}
+.interview-intent.escalate{color:#9a352d;background:#f7dad8}
+.interview-intent.clarify{color:#6784a0;background:#f2f6fa}
+.interview-thinking{color:var(--muted)!important;font-style:italic}
+.interview-reply{margin-bottom:6px}
+
+.defense-score-tiles{display:flex;flex-wrap:wrap;gap:9px}
+.defense-score-tile{flex:1 1 150px;border:1px solid var(--line);border-radius:6px;background:var(--surface);padding:9px 11px;display:flex;flex-direction:column;gap:3px}
+.defense-score-tile span{font:9px var(--mono);text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.defense-score-tile strong{font:14px var(--mono);font-weight:600;color:var(--ink)}
+
+.defense-weak-concepts{border:1px solid #eddcc9;border-radius:6px;background:#fbf1e7;padding:10px 13px}
+.defense-weak-concepts ul{list-style:disc;margin:6px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.defense-weak-concepts li{font-size:11px;line-height:1.6;color:#a9663a}

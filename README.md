@@ -18,7 +18,7 @@ No credentials are required for lessons, simulations, saved designs, the estimat
 ## Included
 
 - **57 lessons in 12 chapters**, four tiers from Beginner to Expert: Foundations, Performance, Workloads & queues, Caching deep dive, Reliability, Replication & consistency, Partitioning, Traffic control, Multi-region, Data systems (delivery semantics, dead-letter queues, quorums, lost writes, gray failure, connection pools, transactions and sagas, streams and search), an Interview toolkit of written knowledge lessons, and five open-ended Design briefs on a blank canvas.
-- **Three lesson kinds.** `sim` lessons are built and measured on the canvas. `brief` lessons start ambiguous and empty: you type your own clarifying questions to an interviewer (matched to the hidden facts, or answered by Claude when a key is set) to reveal the workload, then estimate, build from a blank canvas, and defend. `written` lessons teach a topic through curated readings and a written exercise.
+- **Three lesson kinds.** `sim` lessons are built and measured on the canvas. `brief` lessons start ambiguous and empty: you type your own clarifying questions to an interviewer (matched to the hidden facts, or answered by Gemini when a key is set) to reveal the workload, then estimate, build from a blank canvas, and defend. `written` lessons teach a topic through curated readings and a written exercise.
 - **A learning loop that trains interview skills.** Hints name methods, never numbers. You commit numeric estimates (latency, throughput, database load, cost) before Check unlocks and see how calibrated you were. After passing, the app runs alternatives (scale the bottleneck, add a cache, trim replicas, the hidden reference) and shows where your design sits on cost versus latency. Then you defend the design in interview mode: a clock per stage, dictation through the browser's speech recognition, follow-up questions generated from the weakest claims in your own answer when a key is set, and a rubric grade with deductions for hints, wrong reflection attempts, and overtime. Without a key you self-assess blind: rubric first, model answer only afterwards.
 - **Remix.** Every sim lesson can be replayed with a re-rolled workload; targets are derived from a hidden reference solution so the remix is always solvable and never the same numbers twice.
 - **Curated deep-dive readings** for every lesson: verified links to the Google SRE book, PostgreSQL and Redis docs, AWS architecture articles, Jepsen, The Tail at Scale, and engineering blogs, each with a one-line reason to read it.
@@ -59,10 +59,10 @@ npm run start
 
 Every lesson ends with a written design defense: the learner justifies their architecture and answers a few adversarial follow-up questions against the lesson's rubric.
 
-- **Self-assessment mode (default).** With no `ANTHROPIC_API_KEY` set, `POST /api/grade` responds `501 { mode: "self" }`, the follow-ups are the lesson's static ones, and the learner grades their own answer blind: rubric first, the model answer only afterwards, with one revision allowed. Completions are tagged self-assessed.
-- **Graded mode.** With `ANTHROPIC_API_KEY` set, Claude (`GRADER_MODEL`, default `claude-opus-5`) first generates three follow-up questions aimed at the weakest claims in the learner's own design text, then grades the answers against the rubric: a 0-2 score and one-line note per rubric item, a weighted 0-100 total, and a short critique. In briefs, typed clarifying questions the hidden facts do not cover are answered in character by the same model through `POST /api/clarify`. The model answer used as the grader's reference is never sent to the client.
+- **Self-assessment mode (default).** With no `GEMINI_API_KEY` set, `POST /api/grade` responds `501 { mode: "self" }`, the follow-ups are the lesson's static ones, and the learner grades their own answer blind: rubric first, the model answer only afterwards, with one revision allowed. Completions are tagged self-assessed.
+- **Graded mode.** With `GEMINI_API_KEY` set, Gemini (`GRADER_MODEL`, default `gemini-3.8-flash`) first generates three follow-up questions aimed at the weakest claims in the learner's own design text, then grades the answers against the rubric: a 0-2 score and one-line note per rubric item, a weighted 0-100 total, and a short critique. In briefs, typed clarifying questions the hidden facts do not cover are answered in character by the same model through `POST /api/clarify`. The model answer used as the grader's reference is never sent to the client. `GET /api/grade` reports `{ mode, provider: "gemini", model }` in graded mode.
 
-Set `ANTHROPIC_API_KEY` and, optionally, `GRADER_MODEL` in `.env.local` (and in the Vercel environment for deployments) to turn on graded mode; leave them unset to keep self-assessment.
+Set `GEMINI_API_KEY` (from [Google AI Studio](https://aistudio.google.com/apikey)) and, optionally, `GRADER_MODEL` in `.env.local` (and in the Vercel environment for deployments) to turn on graded mode; leave them unset to keep self-assessment.
 
 ## Optional cloud accounts
 
@@ -81,7 +81,7 @@ No Supabase project or credentials are included. Live email delivery, deployed d
 
 ## Vercel
 
-Import the repository as a Next.js project. The build command is `npm run build`; Vercel detects the framework output automatically. The guest experience needs no environment variables. Configure `ANTHROPIC_API_KEY` for graded defenses and the optional Supabase variables for each environment that should offer cloud accounts, and include that deployment's sign-in redirect URL in Supabase.
+Import the repository as a Next.js project. The build command is `npm run build`; Vercel detects the framework output automatically. The guest experience needs no environment variables. Configure `GEMINI_API_KEY` for graded defenses and the optional Supabase variables for each environment that should offer cloud accounts, and include that deployment's sign-in redirect URL in Supabase.
 
 ## Simulation assumptions and scope
 

@@ -1,7 +1,6 @@
 import { z } from "zod";
-import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Lesson, RubricItem } from "./types";
+import { GRADER_MODEL, generateJson, type GeminiClient } from "./gemini";
 
 export const GradeSchema = z.object({
   items: z.array(
@@ -114,14 +113,14 @@ For each rubric item, assign a score of 0, 1, or 2 (0 = missing or wrong, 1 = pa
 Be calibrated, not generous. A vague or hand-wavy answer that merely mentions a term without explaining the mechanism does not earn full credit. Grade only what the candidate actually wrote; do not give credit for things they did not say.`;
 
 /**
- * Builds the system + user messages sent to Claude for grading. The model
- * answer is included only for the grader's reference and is never echoed
- * back to the client by the route.
+ * Builds the system + contents sent to Gemini for grading. The model answer
+ * is included only for the grader's reference and is never echoed back to
+ * the client by the route.
  */
 export function buildGradingMessages(
   lesson: Lesson,
   answers: GradeAnswers
-): { system: string; messages: Anthropic.MessageParam[] } {
+): { system: string; contents: { role: "user" | "model"; text: string }[] } {
   const rubricLines = lesson.defense.rubric
     .map((item) => `- [${item.id}] (weight ${item.weight}): ${item.criterion}`)
     .join("\n");
@@ -154,7 +153,7 @@ ${followUpLines}`;
 
   return {
     system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: userContent }],
+    contents: [{ role: "user", text: userContent }],
   };
 }
 
@@ -176,47 +175,50 @@ export function scoreTotal(lesson: Lesson, items: Grade["items"]): number {
   return Math.round((earned / possible) * 100);
 }
 
-export interface ClaudeClient {
-  messages: {
-    parse: (params: {
-      model: string;
-      max_tokens: number;
-      system: string;
-      messages: Anthropic.MessageParam[];
-      output_config: { effort: "medium"; format: ReturnType<typeof zodOutputFormat> };
-    }) => Promise<{ parsed_output: Grade | null }>;
-  };
-}
+const GRADE_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          score: { type: "integer", enum: [0, 1, 2] },
+          note: { type: "string" },
+        },
+        required: ["id", "score", "note"],
+      },
+    },
+    critique: { type: "string" },
+  },
+  required: ["items", "critique"],
+};
 
 /**
- * Grades a learner's design defense with Claude. `client` defaults to a new
- * Anthropic() (reads ANTHROPIC_API_KEY from the environment) but accepts a
- * fake for unit testing.
+ * Grades a learner's design defense with Gemini. `client` defaults to a real
+ * GoogleGenAI client (reads GEMINI_API_KEY from the environment) but accepts
+ * a fake for unit testing.
  */
-export async function gradeWithClaude(
+export async function gradeWithGemini(
   lesson: Lesson,
   answers: GradeAnswers,
-  client: ClaudeClient = new Anthropic() as unknown as ClaudeClient
+  client?: GeminiClient
 ): Promise<GradeResult> {
-  const { system, messages } = buildGradingMessages(lesson, answers);
-  const model = process.env.GRADER_MODEL ?? "claude-opus-5";
+  const { system, contents } = buildGradingMessages(lesson, answers);
 
-  const response = await client.messages.parse({
-    model,
-    max_tokens: 4000,
+  const grade = await generateJson<Grade>({
+    client,
     system,
-    messages,
-    output_config: { effort: "medium", format: zodOutputFormat(GradeSchema) },
+    contents,
+    schema: GRADE_JSON_SCHEMA,
+    parse: (value) => GradeSchema.parse(value),
+    maxOutputTokens: 4000,
   });
 
-  if (!response.parsed_output) {
-    throw new Error("The grader failed to produce a structured response.");
-  }
+  const total = scoreTotal(lesson, grade.items);
 
-  const { items, critique } = response.parsed_output;
-  const total = scoreTotal(lesson, items);
-
-  return { mode: "graded", items, total, critique };
+  return { mode: "graded", items: grade.items, total, critique: grade.critique };
 }
 
 export const FollowUpsSchema = z.object({
@@ -229,15 +231,28 @@ const FOLLOWUPS_SYSTEM_PROMPT = `You are a staff-level system design interviewer
 
 Write exactly 3 short follow-up questions to ask next. Each question must target a specific claim in the candidate's own answer that is weak, hand-wavy, or missing entirely — not a generic checklist item. Never answer the question for them, and never suggest the answer. Each question must be a single sentence. Output only the questions themselves, with no preamble, numbering, or explanation.`;
 
+const FOLLOWUPS_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    followUps: {
+      type: "array",
+      items: { type: "string" },
+      minItems: 3,
+      maxItems: 3,
+    },
+  },
+  required: ["followUps"],
+};
+
 /**
- * Builds the system + user messages sent to Claude to generate dynamic
- * follow-up questions targeting weak or missing claims in the learner's own
- * design text.
+ * Builds the system + contents sent to Gemini to generate dynamic follow-up
+ * questions targeting weak or missing claims in the learner's own design
+ * text.
  */
 export function buildFollowUpsMessages(
   lesson: Lesson,
   design: string
-): { system: string; messages: Anthropic.MessageParam[] } {
+): { system: string; contents: { role: "user" | "model"; text: string }[] } {
   const rubricLines = lesson.defense.rubric
     .map((item) => `- ${item.criterion}`)
     .join("\n");
@@ -256,47 +271,33 @@ ${design}`;
 
   return {
     system: FOLLOWUPS_SYSTEM_PROMPT,
-    messages: [{ role: "user", content: userContent }],
-  };
-}
-
-export interface FollowUpsClient {
-  messages: {
-    parse: (params: {
-      model: string;
-      max_tokens: number;
-      system: string;
-      messages: Anthropic.MessageParam[];
-      output_config: { effort: "medium"; format: ReturnType<typeof zodOutputFormat> };
-    }) => Promise<{ parsed_output: FollowUps | null }>;
+    contents: [{ role: "user", text: userContent }],
   };
 }
 
 /**
  * Generates 3 dynamic follow-up questions targeting the weakest claims in
- * the learner's own design text. `client` defaults to a new Anthropic()
- * (reads ANTHROPIC_API_KEY from the environment) but accepts a fake for unit
- * testing.
+ * the learner's own design text. `client` defaults to a real GoogleGenAI
+ * client (reads GEMINI_API_KEY from the environment) but accepts a fake for
+ * unit testing.
  */
 export async function generateFollowUps(
   lesson: Lesson,
   design: string,
-  client: FollowUpsClient = new Anthropic() as unknown as FollowUpsClient
+  client?: GeminiClient
 ): Promise<string[]> {
-  const { system, messages } = buildFollowUpsMessages(lesson, design);
-  const model = process.env.GRADER_MODEL ?? "claude-opus-5";
+  const { system, contents } = buildFollowUpsMessages(lesson, design);
 
-  const response = await client.messages.parse({
-    model,
-    max_tokens: 1000,
+  const result = await generateJson<FollowUps>({
+    client,
     system,
-    messages,
-    output_config: { effort: "medium", format: zodOutputFormat(FollowUpsSchema) },
+    contents,
+    schema: FOLLOWUPS_JSON_SCHEMA,
+    parse: (value) => FollowUpsSchema.parse(value),
+    maxOutputTokens: 1000,
   });
 
-  if (!response.parsed_output) {
-    throw new Error("The interviewer failed to produce follow-up questions.");
-  }
-
-  return response.parsed_output.followUps;
+  return result.followUps;
 }
+
+export { GRADER_MODEL };

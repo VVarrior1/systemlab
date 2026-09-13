@@ -1,6 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { getLesson } from "../../../lib/curriculum";
 import { matchClarification, neutralReply, answerAsInterviewer } from "../../../lib/clarify";
+import { hasGeminiKey } from "../../../lib/gemini";
 
 export const runtime = "nodejs";
 
@@ -65,7 +65,7 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
 
-  if (!process.env.ANTHROPIC_API_KEY) {
+  if (!hasGeminiKey()) {
     return Response.json({ mode: "neutral", answer: neutralReply(question) }, { status: 200 });
   }
 
@@ -73,10 +73,7 @@ export async function POST(req: Request): Promise<Response> {
     const answer = await answerAsInterviewer(lesson, question);
     return Response.json({ mode: "answered", answer }, { status: 200 });
   } catch (error) {
-    if (error instanceof Anthropic.APIError) {
-      return Response.json({ error: `Interviewer service error: ${error.message}` }, { status: 502 });
-    }
     const message = error instanceof Error ? error.message : "Clarification failed.";
-    return Response.json({ error: message }, { status: 502 });
+    return Response.json({ error: `Interviewer service error: ${message}` }, { status: 502 });
   }
 }

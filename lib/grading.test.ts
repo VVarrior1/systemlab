@@ -4,13 +4,12 @@ import {
   buildFollowUpsMessages,
   buildGradingMessages,
   generateFollowUps,
-  gradeWithClaude,
+  gradeWithGemini,
   scoreTotal,
   validateAnswers,
   validateDesignText,
-  type ClaudeClient,
-  type FollowUpsClient,
 } from "./grading";
+import type { GeminiClient } from "./gemini";
 
 function makeLesson(overrides: Partial<Lesson> = {}): Lesson {
   return {
@@ -56,6 +55,14 @@ function makeLesson(overrides: Partial<Lesson> = {}): Lesson {
 }
 
 const longDesign = "word ".repeat(60).trim();
+
+function fakeGeminiClient(payload: unknown): GeminiClient {
+  return {
+    models: {
+      generateContent: async () => ({ text: JSON.stringify(payload) }),
+    },
+  };
+}
 
 describe("validateDesignText", () => {
   it("accepts a valid design", () => {
@@ -195,12 +202,12 @@ describe("scoreTotal", () => {
 describe("buildGradingMessages", () => {
   it("includes rubric, model answer, design, and follow-ups", () => {
     const lesson = makeLesson();
-    const { system, messages } = buildGradingMessages(lesson, {
+    const { system, contents } = buildGradingMessages(lesson, {
       design: longDesign,
       followUps: [{ question: "What about 10x traffic?", answer: "my answer to follow-up one" }],
     });
     expect(system).toMatch(/staff-level|calibrated/i);
-    const userContent = messages[0]!.content as string;
+    const userContent = contents[0]!.text;
     expect(userContent).toContain("tradeoffs");
     expect(userContent).toContain(lesson.defense.modelAnswer);
     expect(userContent).toContain(longDesign);
@@ -210,80 +217,94 @@ describe("buildGradingMessages", () => {
 
   it("marks a follow-up with a blank answer as unanswered", () => {
     const lesson = makeLesson();
-    const { messages } = buildGradingMessages(lesson, {
+    const { contents } = buildGradingMessages(lesson, {
       design: longDesign,
       followUps: [{ question: "What about 10x traffic?", answer: "" }],
     });
-    const userContent = messages[0]!.content as string;
+    const userContent = contents[0]!.text;
     expect(userContent).toContain("(not answered)");
   });
 
   it("includes nothing follow-up related when no follow-ups were asked", () => {
     const lesson = makeLesson();
-    const { messages } = buildGradingMessages(lesson, { design: longDesign, followUps: [] });
-    const userContent = messages[0]!.content as string;
+    const { contents } = buildGradingMessages(lesson, { design: longDesign, followUps: [] });
+    const userContent = contents[0]!.text;
     expect(userContent).not.toContain("Follow-up 1:");
   });
 });
 
-describe("gradeWithClaude", () => {
-  it("returns a graded result from a fake client's parsed_output", async () => {
+describe("gradeWithGemini", () => {
+  it("returns a graded result from a fake client's response", async () => {
     const lesson = makeLesson();
-    const fakeClient: ClaudeClient = {
-      messages: {
-        parse: async () => ({
-          parsed_output: {
-            items: [
-              { id: "tradeoffs", score: 2, note: "Clear tradeoffs." },
-              { id: "failure", score: 1, note: "Partial failure discussion." },
-            ],
-            critique: "Strong on tradeoffs. Biggest gap: failure handling under load. Overall solid.",
-          },
-        }),
-      },
-    };
+    const fakeClient = fakeGeminiClient({
+      items: [
+        { id: "tradeoffs", score: 2, note: "Clear tradeoffs." },
+        { id: "failure", score: 1, note: "Partial failure discussion." },
+      ],
+      critique: "Strong on tradeoffs. Biggest gap: failure handling under load. Overall solid.",
+    });
 
-    const result = await gradeWithClaude(lesson, { design: longDesign, followUps: [] }, fakeClient);
+    const result = await gradeWithGemini(lesson, { design: longDesign, followUps: [] }, fakeClient);
     expect(result.mode).toBe("graded");
     expect(result.total).toBe(80);
     expect(result.items).toHaveLength(2);
     expect(result.critique).toMatch(/tradeoffs/i);
   });
 
-  it("throws when parsed_output is null", async () => {
+  it("throws when the response is empty", async () => {
     const lesson = makeLesson();
-    const fakeClient: ClaudeClient = {
-      messages: { parse: async () => ({ parsed_output: null }) },
+    const fakeClient: GeminiClient = {
+      models: { generateContent: async () => ({ text: "" }) },
     };
-    await expect(gradeWithClaude(lesson, { design: longDesign, followUps: [] }, fakeClient)).rejects.toThrow();
+    await expect(gradeWithGemini(lesson, { design: longDesign, followUps: [] }, fakeClient)).rejects.toThrow();
+  });
+
+  it("retries once on invalid JSON and succeeds on the second attempt", async () => {
+    const lesson = makeLesson();
+    let calls = 0;
+    const fakeClient: GeminiClient = {
+      models: {
+        generateContent: async () => {
+          calls += 1;
+          if (calls === 1) return { text: "not json" };
+          return { text: JSON.stringify({ items: [], critique: "ok" }) };
+        },
+      },
+    };
+    const result = await gradeWithGemini(lesson, { design: longDesign, followUps: [] }, fakeClient);
+    expect(calls).toBe(2);
+    expect(result.critique).toBe("ok");
   });
 
   it("uses GRADER_MODEL env var when set", async () => {
     const original = process.env.GRADER_MODEL;
-    process.env.GRADER_MODEL = "claude-test-model";
+    process.env.GRADER_MODEL = "gemini-test-model";
+    vi.resetModules();
     let seenModel = "";
-    const fakeClient: ClaudeClient = {
-      messages: {
-        parse: async (params) => {
+    const fakeClient: GeminiClient = {
+      models: {
+        generateContent: async (params: { model: string }) => {
           seenModel = params.model;
-          return { parsed_output: { items: [], critique: "ok" } };
+          return { text: JSON.stringify({ items: [], critique: "ok" }) };
         },
       },
     };
-    await gradeWithClaude(makeLesson(), { design: longDesign, followUps: [] }, fakeClient);
-    expect(seenModel).toBe("claude-test-model");
+    const { gradeWithGemini: freshGradeWithGemini } = await import("./grading");
+    await freshGradeWithGemini(makeLesson(), { design: longDesign, followUps: [] }, fakeClient);
+    expect(seenModel).toBe("gemini-test-model");
     if (original === undefined) delete process.env.GRADER_MODEL;
     else process.env.GRADER_MODEL = original;
+    vi.resetModules();
   });
 });
 
 describe("buildFollowUpsMessages", () => {
   it("includes the brief, learning points, rubric, and the candidate's design", () => {
     const lesson = makeLesson();
-    const { system, messages } = buildFollowUpsMessages(lesson, longDesign);
+    const { system, contents } = buildFollowUpsMessages(lesson, longDesign);
     expect(system).toMatch(/interviewer/i);
     expect(system).toMatch(/never answer/i);
-    const userContent = messages[0]!.content as string;
+    const userContent = contents[0]!.text;
     expect(userContent).toContain(lesson.brief);
     expect(userContent).toContain("Point one.");
     expect(userContent).toContain("Names concrete tradeoffs");
@@ -293,58 +314,55 @@ describe("buildFollowUpsMessages", () => {
 });
 
 describe("generateFollowUps", () => {
-  it("returns 3 questions from a fake client's parsed_output", async () => {
+  it("returns 3 questions from a fake client's response", async () => {
     const lesson = makeLesson();
-    const fakeClient: FollowUpsClient = {
-      messages: {
-        parse: async () => ({
-          parsed_output: {
-            followUps: [
-              "How does your design handle a 10x spike in traffic?",
-              "What happens when the primary database fails over?",
-              "How do you keep the cache consistent with the source of truth?",
-            ],
-          },
-        }),
-      },
-    };
+    const fakeClient = fakeGeminiClient({
+      followUps: [
+        "How does your design handle a 10x spike in traffic?",
+        "What happens when the primary database fails over?",
+        "How do you keep the cache consistent with the source of truth?",
+      ],
+    });
     const followUps = await generateFollowUps(lesson, longDesign, fakeClient);
     expect(followUps).toHaveLength(3);
     expect(followUps[0]).toMatch(/traffic/i);
   });
 
-  it("throws when parsed_output is null", async () => {
+  it("throws when the response is empty", async () => {
     const lesson = makeLesson();
-    const fakeClient: FollowUpsClient = {
-      messages: { parse: async () => ({ parsed_output: null }) },
+    const fakeClient: GeminiClient = {
+      models: { generateContent: async () => ({ text: "" }) },
     };
     await expect(generateFollowUps(lesson, longDesign, fakeClient)).rejects.toThrow();
   });
 
   it("uses GRADER_MODEL env var when set", async () => {
     const original = process.env.GRADER_MODEL;
-    process.env.GRADER_MODEL = "claude-test-model";
+    process.env.GRADER_MODEL = "gemini-test-model";
+    vi.resetModules();
     let seenModel = "";
-    const fakeClient: FollowUpsClient = {
-      messages: {
-        parse: async (params) => {
+    const fakeClient: GeminiClient = {
+      models: {
+        generateContent: async (params: { model: string }) => {
           seenModel = params.model;
-          return { parsed_output: { followUps: ["a?", "b?", "c?"] } };
+          return { text: JSON.stringify({ followUps: ["a?", "b?", "c?"] }) };
         },
       },
     };
-    await generateFollowUps(makeLesson(), longDesign, fakeClient);
-    expect(seenModel).toBe("claude-test-model");
+    const { generateFollowUps: freshGenerateFollowUps } = await import("./grading");
+    await freshGenerateFollowUps(makeLesson(), longDesign, fakeClient);
+    expect(seenModel).toBe("gemini-test-model");
     if (original === undefined) delete process.env.GRADER_MODEL;
     else process.env.GRADER_MODEL = original;
+    vi.resetModules();
   });
 });
 
 describe("GET /api/grade", () => {
   it("returns { mode: 'self' } without a key", async () => {
     vi.resetModules();
-    const original = process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
+    const original = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
 
     const { GET } = await import("../app/api/grade/route");
     const response = await GET();
@@ -352,37 +370,39 @@ describe("GET /api/grade", () => {
     const json = await response.json();
     expect(json).toEqual({ mode: "self" });
 
-    if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = original;
+    if (original === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = original;
     vi.resetModules();
   });
 
-  it("returns { mode: 'graded' } with a key", async () => {
+  it("returns { mode: 'graded', provider: 'gemini', model } with a key", async () => {
     vi.resetModules();
-    const original = process.env.ANTHROPIC_API_KEY;
-    process.env.ANTHROPIC_API_KEY = "test-key";
+    const original = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "test-key";
 
     const { GET } = await import("../app/api/grade/route");
     const response = await GET();
     expect(response.status).toBe(200);
     const json = await response.json();
-    expect(json).toEqual({ mode: "graded" });
+    expect(json.mode).toBe("graded");
+    expect(json.provider).toBe("gemini");
+    expect(typeof json.model).toBe("string");
 
-    if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = original;
+    if (original === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = original;
     vi.resetModules();
   });
 });
 
 describe("POST /api/grade", () => {
-  it("returns 501 { mode: 'self' } when ANTHROPIC_API_KEY is unset (grade stage)", async () => {
+  it("returns 501 { mode: 'self' } when GEMINI_API_KEY is unset (grade stage)", async () => {
     vi.resetModules();
     vi.doMock("./curriculum", () => ({
       getLesson: (id: string) => (id === "test-lesson" ? makeLesson() : undefined),
     }));
 
-    const original = process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
+    const original = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
 
     const { POST } = await import("../app/api/grade/route");
     const request = new Request("http://localhost/api/grade", {
@@ -396,8 +416,8 @@ describe("POST /api/grade", () => {
     const json = await response.json();
     expect(json).toEqual({ mode: "self" });
 
-    if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = original;
+    if (original === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = original;
     vi.doUnmock("./curriculum");
     vi.resetModules();
   });
@@ -409,8 +429,8 @@ describe("POST /api/grade", () => {
       getLesson: (id: string) => (id === "test-lesson" ? lesson : undefined),
     }));
 
-    const original = process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
+    const original = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
 
     const { POST } = await import("../app/api/grade/route");
     const request = new Request("http://localhost/api/grade", {
@@ -424,8 +444,8 @@ describe("POST /api/grade", () => {
     const json = await response.json();
     expect(json).toEqual({ mode: "self", followUps: lesson.defense.followUps });
 
-    if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = original;
+    if (original === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = original;
     vi.doUnmock("./curriculum");
     vi.resetModules();
   });
@@ -436,20 +456,15 @@ describe("POST /api/grade", () => {
     vi.doMock("./curriculum", () => ({
       getLesson: (id: string) => (id === "test-lesson" ? lesson : undefined),
     }));
-    vi.doMock("@anthropic-ai/sdk", async () => {
-      const actual = await vi.importActual<typeof import("@anthropic-ai/sdk")>("@anthropic-ai/sdk");
-      class FakeAnthropic {
-        messages = {
-          parse: async () => ({
-            parsed_output: { followUps: ["a?", "b?", "c?"] },
-          }),
-        };
-      }
-      return { ...actual, default: FakeAnthropic };
+    vi.doMock("./gemini", async () => {
+      const actual = await vi.importActual<typeof import("./gemini")>("./gemini");
+      return {
+        ...actual,
+        hasGeminiKey: () => true,
+        generateJson: async (args: { parse: (value: unknown) => unknown }) =>
+          args.parse({ followUps: ["a?", "b?", "c?"] }),
+      };
     });
-
-    const original = process.env.ANTHROPIC_API_KEY;
-    process.env.ANTHROPIC_API_KEY = "test-key";
 
     const { POST } = await import("../app/api/grade/route");
     const request = new Request("http://localhost/api/grade", {
@@ -463,10 +478,8 @@ describe("POST /api/grade", () => {
     const json = await response.json();
     expect(json).toEqual({ mode: "graded", followUps: ["a?", "b?", "c?"] });
 
-    if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = original;
     vi.doUnmock("./curriculum");
-    vi.doUnmock("@anthropic-ai/sdk");
+    vi.doUnmock("./gemini");
     vi.resetModules();
   });
 

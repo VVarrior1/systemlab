@@ -5,8 +5,8 @@ import {
   buildClarifyMessages,
   matchClarification,
   neutralReply,
-  type ClarifyClient,
 } from "./clarify";
+import type { GeminiClient } from "./gemini";
 
 const clarifications: Clarification[] = [
   { question: "What is the expected request rate?", answer: "About 5,000 QPS at peak.", relevant: true },
@@ -119,9 +119,9 @@ describe("neutralReply", () => {
 describe("buildClarifyMessages", () => {
   it("includes the brief and all clarifications as hidden facts, but never the relevant flag", () => {
     const lesson = makeLesson();
-    const { system, messages } = buildClarifyMessages(lesson, "What about multi-region?");
+    const { system, contents } = buildClarifyMessages(lesson, "What about multi-region?");
     expect(system).toMatch(/interviewer/i);
-    const userContent = messages[0]!.content as string;
+    const userContent = contents[0]!.text;
     expect(userContent).toContain(lesson.brief);
     expect(userContent).toContain("5,000 QPS");
     expect(userContent).toContain("single region is fine");
@@ -130,21 +130,21 @@ describe("buildClarifyMessages", () => {
 });
 
 describe("answerAsInterviewer", () => {
-  it("returns the answer from a fake client's parsed_output", async () => {
+  it("returns the answer from a fake client's response", async () => {
     const lesson = makeLesson();
-    const fakeClient: ClarifyClient = {
-      messages: {
-        parse: async () => ({ parsed_output: { answer: "We expect about 5,000 QPS at peak." } }),
+    const fakeClient: GeminiClient = {
+      models: {
+        generateContent: async () => ({ text: JSON.stringify({ answer: "We expect about 5,000 QPS at peak." }) }),
       },
     };
     const answer = await answerAsInterviewer(lesson, "What's the traffic?", fakeClient);
     expect(answer).toBe("We expect about 5,000 QPS at peak.");
   });
 
-  it("throws when parsed_output is null", async () => {
+  it("throws when the response is empty", async () => {
     const lesson = makeLesson();
-    const fakeClient: ClarifyClient = {
-      messages: { parse: async () => ({ parsed_output: null }) },
+    const fakeClient: GeminiClient = {
+      models: { generateContent: async () => ({ text: "" }) },
     };
     await expect(answerAsInterviewer(lesson, "What's the traffic?", fakeClient)).rejects.toThrow();
   });
@@ -184,8 +184,8 @@ describe("POST /api/clarify", () => {
       getLesson: (id: string) => (id === "test-lesson" ? lesson : undefined),
     }));
 
-    const original = process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
+    const original = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
 
     const { POST } = await import("../app/api/clarify/route");
     const request = new Request("http://localhost/api/clarify", {
@@ -200,8 +200,8 @@ describe("POST /api/clarify", () => {
     expect(json.mode).toBe("neutral");
     expect(typeof json.answer).toBe("string");
 
-    if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = original;
+    if (original === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = original;
     vi.doUnmock("./curriculum");
     vi.resetModules();
   });
@@ -212,20 +212,15 @@ describe("POST /api/clarify", () => {
     vi.doMock("./curriculum", () => ({
       getLesson: (id: string) => (id === "test-lesson" ? lesson : undefined),
     }));
-    vi.doMock("@anthropic-ai/sdk", async () => {
-      const actual = await vi.importActual<typeof import("@anthropic-ai/sdk")>("@anthropic-ai/sdk");
-      class FakeAnthropic {
-        messages = {
-          parse: async () => ({
-            parsed_output: { answer: "I don't have a strong requirement there; assume what a careful engineer would." },
-          }),
-        };
-      }
-      return { ...actual, default: FakeAnthropic };
+    vi.doMock("./gemini", async () => {
+      const actual = await vi.importActual<typeof import("./gemini")>("./gemini");
+      return {
+        ...actual,
+        hasGeminiKey: () => true,
+        generateJson: async (args: { parse: (value: unknown) => unknown }) =>
+          args.parse({ answer: "I don't have a strong requirement there; assume what a careful engineer would." }),
+      };
     });
-
-    const original = process.env.ANTHROPIC_API_KEY;
-    process.env.ANTHROPIC_API_KEY = "test-key";
 
     const { POST } = await import("../app/api/clarify/route");
     const request = new Request("http://localhost/api/clarify", {
@@ -240,10 +235,8 @@ describe("POST /api/clarify", () => {
     expect(json.mode).toBe("answered");
     expect(typeof json.answer).toBe("string");
 
-    if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = original;
     vi.doUnmock("./curriculum");
-    vi.doUnmock("@anthropic-ai/sdk");
+    vi.doUnmock("./gemini");
     vi.resetModules();
   });
 

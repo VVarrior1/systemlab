@@ -15,6 +15,23 @@
 
 .chapter-lesson-count{margin-left:auto;font:9px var(--mono);color:#a7b0aa;background:#f1f4f0;border-radius:8px;padding:1px 7px}
 
+.review-panel{background:#fff;border:1px solid #e5ebe7;border-radius:10px;padding:18px 20px;margin-bottom:22px}
+.review-panel-heading{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.review-panel-heading h2{margin:2px 0 0;font-size:15px}
+.review-panel-score{margin-left:auto;font:600 22px var(--mono);color:#3f6b4a}
+.review-panel-score small{font-size:11px;font-weight:400;color:#94a49a}
+.review-queue{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.review-queue li{display:flex;align-items:center;gap:10px;padding:9px 4px;border-top:1px solid #f0f3f0}
+.review-queue li:first-child{border-top:none}
+.review-queue li a{flex:1;display:flex;flex-direction:column;gap:2px;text-decoration:none;min-width:0}
+.review-queue-title{font-size:13px;color:#334038;font-weight:500}
+.review-queue-reason{font-size:11px;color:#8a9890}
+.review-queue-due{font:10px var(--mono);color:#a7b0aa;flex-shrink:0}
+.review-panel-empty{margin:0;font-size:12px;color:#8a9890}
+.review-diagnosis{margin-top:14px;padding-top:14px;border-top:1px solid #edf1ed}
+.review-diagnosis ul{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.review-diagnosis li{display:flex;align-items:flex-start;gap:7px;font-size:12px;color:#526c53}
+
 @media (max-width:760px){
   .learning-overview{grid-template-columns:repeat(2,minmax(0,1fr))}
   .kind-badge{display:none}

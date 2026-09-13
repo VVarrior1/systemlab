@@ -471,6 +471,78 @@ describe("v2.1 progress fields (interview overtime, follow-up mode)", () => {
   });
 });
 
+describe("v2.2 progress fields (mastery model)", () => {
+  const base: ProgressRecord = { lessonId: "first-request", completedAt: "2026-09-09T12:00:00.000Z", bestP95: 100, cost: 8, assessmentVersion: ASSESSMENT_VERSION };
+
+  it("accepts every optional v2.2 progress field within bounds", () => {
+    const validated = validateProgress({
+      ...base, blankCanvas: true, interviewRounds: 5, recoveryScore: 2,
+      weakConcepts: ["latency", "consistency"], estimationBias: { dbLoad: -0.35, cost: 0.1 }, wallClockOvertime: 120,
+    });
+    expect(validated).toMatchObject({
+      blankCanvas: true, interviewRounds: 5, recoveryScore: 2,
+      weakConcepts: ["latency", "consistency"], estimationBias: { dbLoad: -0.35, cost: 0.1 }, wallClockOvertime: 120,
+    });
+  });
+
+  it.each([
+    ["interviewRounds", -1], ["interviewRounds", 1.5], ["interviewRounds", 21],
+    ["recoveryScore", -0.01], ["recoveryScore", 2.01],
+    ["wallClockOvertime", -1], ["wallClockOvertime", 100_001],
+  ])("rejects an out-of-range %s value", (field, value) => {
+    expect(() => validateProgress({ ...base, [field]: value })).toThrow();
+  });
+
+  it("rejects an invalid blankCanvas type", () => {
+    expect(() => validateProgress({ ...base, blankCanvas: "yes" })).toThrow("blank canvas");
+  });
+
+  it("rejects a weakConcepts array that is too long or has entries that are too long", () => {
+    expect(() => validateProgress({ ...base, weakConcepts: Array.from({ length: 21 }, (_, i) => `c${i}`) })).toThrow();
+    expect(() => validateProgress({ ...base, weakConcepts: ["a".repeat(65)] })).toThrow();
+  });
+
+  it("rejects an estimationBias with an unknown key or an out-of-range value", () => {
+    expect(() => validateProgress({ ...base, estimationBias: { madeUp: 0.1 } })).toThrow("estimation bias");
+    expect(() => validateProgress({ ...base, estimationBias: { p95: 10.1 } })).toThrow("estimation bias");
+    expect(() => validateProgress({ ...base, estimationBias: { p95: -10.1 } })).toThrow("estimation bias");
+  });
+
+  it("keeps the max of interviewRounds/recoveryScore/wallClockOvertime and ORs blankCanvas", () => {
+    const first: ProgressRecord = { ...base, blankCanvas: false, interviewRounds: 2, recoveryScore: 0, wallClockOvertime: 10 };
+    const second: ProgressRecord = { ...base, completedAt: "2026-09-10T12:00:00.000Z", blankCanvas: true, interviewRounds: 5, recoveryScore: 2, wallClockOvertime: 4 };
+    const merged = mergeProgress(first, second);
+    expect(merged.blankCanvas).toBe(true);
+    expect(merged.interviewRounds).toBe(5);
+    expect(merged.recoveryScore).toBe(2);
+    expect(merged.wallClockOvertime).toBe(10);
+  });
+
+  it("unions weakConcepts with the latest record's items first and de-duplicated", () => {
+    const first: ProgressRecord = { ...base, completedAt: "2026-09-09T12:00:00.000Z", weakConcepts: ["latency", "shared"] };
+    const second: ProgressRecord = { ...base, completedAt: "2026-09-10T12:00:00.000Z", weakConcepts: ["consistency", "shared"] };
+    expect(mergeProgress(first, second).weakConcepts).toEqual(["consistency", "shared", "latency"]);
+    expect(mergeProgress(second, first).weakConcepts).toEqual(["consistency", "shared", "latency"]);
+  });
+
+  it("keeps only the latest record's estimationBias", () => {
+    const first: ProgressRecord = { ...base, completedAt: "2026-09-09T12:00:00.000Z", estimationBias: { p95: 0.2 } };
+    const second: ProgressRecord = { ...base, completedAt: "2026-09-10T12:00:00.000Z", estimationBias: { dbLoad: -0.3 } };
+    expect(mergeProgress(first, second).estimationBias).toEqual({ dbLoad: -0.3 });
+    expect(mergeProgress(second, first).estimationBias).toEqual({ dbLoad: -0.3 });
+  });
+
+  it("leaves v2.2 fields undefined when neither record has them", () => {
+    const merged = mergeProgress({ ...base }, { ...base, bestP95: 50 });
+    expect(merged.blankCanvas).toBeUndefined();
+    expect(merged.interviewRounds).toBeUndefined();
+    expect(merged.recoveryScore).toBeUndefined();
+    expect(merged.weakConcepts).toBeUndefined();
+    expect(merged.estimationBias).toBeUndefined();
+    expect(merged.wallClockOvertime).toBeUndefined();
+  });
+});
+
 describe("v2 progress fields", () => {
   const base: ProgressRecord = { lessonId: "first-request", completedAt: "2026-09-09T12:00:00.000Z", bestP95: 100, cost: 8, assessmentVersion: ASSESSMENT_VERSION };
 

@@ -1,7 +1,6 @@
 import { z } from "zod";
-import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Clarification, Lesson } from "./types";
+import { generateJson, type GeminiClient } from "./gemini";
 
 /**
  * Result of matching a free-text question against a lesson's authored
@@ -132,7 +131,7 @@ You are given the brief and a list of hidden facts (requirements the interviewer
 Never mention "hidden facts", "clarifications", or that any answer is flagged as relevant or not — just answer as the interviewer would. Do not volunteer facts the question did not ask about.`;
 
 /**
- * Builds the system + user messages sent to Claude to answer a candidate's
+ * Builds the system + contents sent to Gemini to answer a candidate's
  * clarifying question in character, using the lesson brief and every
  * authored clarification as hidden facts. The 'relevant' flags are never
  * included in what's sent, so they can never leak into the answer.
@@ -140,7 +139,7 @@ Never mention "hidden facts", "clarifications", or that any answer is flagged as
 export function buildClarifyMessages(
   lesson: Lesson,
   question: string
-): { system: string; messages: Anthropic.MessageParam[] } {
+): { system: string; contents: { role: "user" | "model"; text: string }[] } {
   const facts = (lesson.clarifications ?? [])
     .map((c) => `Q: ${c.question}\nA: ${c.answer}`)
     .join("\n\n");
@@ -156,47 +155,39 @@ ${question}`;
 
   return {
     system: CLARIFY_SYSTEM_PROMPT,
-    messages: [{ role: "user", content: userContent }],
+    contents: [{ role: "user", text: userContent }],
   };
 }
 
-export interface ClarifyClient {
-  messages: {
-    parse: (params: {
-      model: string;
-      max_tokens: number;
-      system: string;
-      messages: Anthropic.MessageParam[];
-      output_config: { effort: "medium"; format: ReturnType<typeof zodOutputFormat> };
-    }) => Promise<{ parsed_output: ClarifyAnswer | null }>;
-  };
-}
+const CLARIFY_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    answer: { type: "string" },
+  },
+  required: ["answer"],
+};
 
 /**
  * Answers a candidate's clarifying question in character as the interviewer,
  * using the brief and all authored clarifications as hidden facts. `client`
- * defaults to a new Anthropic() (reads ANTHROPIC_API_KEY from the
+ * defaults to a real GoogleGenAI client (reads GEMINI_API_KEY from the
  * environment) but accepts a fake for unit testing.
  */
 export async function answerAsInterviewer(
   lesson: Lesson,
   question: string,
-  client: ClarifyClient = new Anthropic() as unknown as ClarifyClient
+  client?: GeminiClient
 ): Promise<string> {
-  const { system, messages } = buildClarifyMessages(lesson, question);
-  const model = process.env.GRADER_MODEL ?? "claude-opus-5";
+  const { system, contents } = buildClarifyMessages(lesson, question);
 
-  const response = await client.messages.parse({
-    model,
-    max_tokens: 500,
+  const result = await generateJson<ClarifyAnswer>({
+    client,
     system,
-    messages,
-    output_config: { effort: "medium", format: zodOutputFormat(ClarifyAnswerSchema) },
+    contents,
+    schema: CLARIFY_JSON_SCHEMA,
+    parse: (value) => ClarifyAnswerSchema.parse(value),
+    maxOutputTokens: 500,
   });
 
-  if (!response.parsed_output) {
-    throw new Error("The interviewer failed to produce an answer.");
-  }
-
-  return response.parsed_output.answer;
+  return result.answer;
 }

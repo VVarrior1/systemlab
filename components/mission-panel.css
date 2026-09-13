@@ -58,3 +58,10 @@
 .reading-meta { display: flex; gap: 10px; margin: 5px 0 7px; font: 9px var(--mono); color: var(--muted); }
 .reading-meta span { display: inline-flex; align-items: center; gap: 4px; }
 .reading-why { margin: 0; font-size: 11px; line-height: 1.6; color: var(--muted); }
+
+/* v2.2 blank-canvas start control */
+.blank-start { margin: 18px 0 0; padding-top: 16px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.blank-start .button { font-size: 11px; min-height: 32px; }
+.blank-start p { margin: 0; font-size: 10px; line-height: 1.6; color: var(--muted); }
+.blank-start .text-button { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; }
+.blank-start-badge { display: inline-flex; align-items: center; gap: 5px; font: 9px var(--mono); text-transform: uppercase; letter-spacing: .04em; color: var(--green-dark); background: var(--green-soft); border-radius: 20px; padding: 3px 9px; }

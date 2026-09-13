@@ -125,6 +125,9 @@ export const chapter: ChapterFile = {
       workload: workload({ requestRate: 800, readRatio: 0.99, duration: 30, seed: 11, keySpace: 5000, keySkew: 0.85 }),
       allowedKinds: allKinds,
       estimation: estimate("dbLoad", "bottleneckCapacity", "cost"),
+      techFocus: ["database", "cache", "server", "load-balancer"],
+      dataModelPrompt:
+        "Model the link store. Name the entities (link, click event if you keep analytics, custom alias reservation, at minimum), give each a primary key and say how the short code is generated and made unique, and list the query patterns: resolve a code to a URL, create a link, edit or delete one, and page a campaign's links. Say which entity grows fastest, what you would partition it by, and what changes the moment every redirect also writes a click row.",
       remixable: true,
       clarifications: [
         clarification(
@@ -225,6 +228,9 @@ export const chapter: ChapterFile = {
       workload: workload({ requestRate: 700, readRatio: 0.9, duration: 30, seed: 12, keySpace: 20000, keySkew: 0.75 }),
       allowedKinds: allKinds,
       estimation: estimate("dbLoad", "bottleneckCapacity", "cost"),
+      techFocus: ["database", "cache", "server", "queue"],
+      dataModelPrompt:
+        "Model the feed. Name the entities (user, follow edge, post, materialised timeline entry, at minimum), give each a primary key, and state the partition key for the timeline store and why it is the timeline's owner rather than the post's author. List the query patterns: append a post, fan out to followers, page a user's timeline, and merge in the accounts you excluded from fan-out. Say which entity grows fastest and what an unfollow costs you in that model.",
       remixable: true,
       clarifications: [
         clarification(
@@ -330,6 +336,9 @@ export const chapter: ChapterFile = {
       workload: workload({ requestRate: 350, readRatio: 0.8, duration: 30, seed: 13, pattern: "flash", keySpace: 200, keySkew: 0.9 }),
       allowedKinds: allKinds,
       estimation: estimate("dbLoad", "bottleneckCapacity", "cost"),
+      techFocus: ["database", "cache", "rate-limiter", "server"],
+      dataModelPrompt:
+        "Model the inventory. Name the entities (event, seat or inventory bucket, hold or reservation, order, idempotency key, at minimum), give each a primary key, and state the conditional-update or lock that makes a seat decrement atomic. List the query patterns: read remaining availability, place a short-lived hold, convert a hold to an order, and expire abandoned holds. Say which row is the hottest in the system and what that means for the shape of the write.",
       clarifications: [
         clarification(
           "How big is the surge relative to normal traffic, and how long does it last?",
@@ -440,6 +449,9 @@ export const chapter: ChapterFile = {
       }),
       allowedKinds: allKinds,
       estimation: estimate("dbLoad", "bottleneckCapacity", "cost"),
+      techFocus: ["queue", "database", "server", "load-balancer"],
+      dataModelPrompt:
+        "Model the messaging store. Name the entities (conversation, message, membership, per-recipient delivery cursor, device token, at minimum), give each a primary key, and state the partition key that gives you per-conversation ordering. List the query patterns: append a message, page a conversation's recent history, resume a reconnecting client from its cursor, and fan out to a conversation's members. Say which entity grows fastest, how a client deduplicates a redelivered message, and what read receipts do to the write volume.",
       remixable: true,
       clarifications: [
         clarification(
@@ -555,6 +567,9 @@ export const chapter: ChapterFile = {
       }),
       allowedKinds: allKinds,
       estimation: estimate("dbLoad", "bottleneckCapacity", "cost"),
+      techFocus: ["database", "rate-limiter", "server", "queue"],
+      dataModelPrompt:
+        "Model the series store. Name the entities (series identity as metric name plus label set, sample, rollup, tenant, at minimum), give each a primary key, and state the shard key you chose and why sharding by time instead manufactures a hot partition. List the query patterns: append a sample, range-scan one series, evaluate an alert across many series, and enforce retention per resolution. Say which label you would refuse to accept and why cardinality, not sample volume, is what breaks this model.",
       clarifications: [
         clarification(
           "What sample rate should I design for, and how does it vary through the day?",

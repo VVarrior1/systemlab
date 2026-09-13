@@ -1,0 +1,59 @@
+/* v2.2 technology + data-model stage. Sits between the check and the defense, and reuses the
+   tokens and classnames already in app/globals.css (button, field-label, panel-empty). */
+
+.tech-stage{margin:0 30px;padding:25px 0;border-top:1px solid #e7eeea;display:flex;flex-direction:column;gap:14px}
+.tech-heading{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;color:var(--ink)}
+.tech-icon{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:7px;background:var(--green-soft);color:var(--green-dark)}
+.tech-badge{margin-left:auto;font:9px var(--mono);text-transform:uppercase;letter-spacing:.03em;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:3px 9px}
+.tech-badge.required{color:#a9663a;background:#fbf1e7;border-color:#eddcc9}
+.tech-badge.committed{display:inline-flex;align-items:center;gap:5px;color:var(--green-dark);background:var(--green-soft);border-color:#cfe7dc}
+.tech-intro{margin:0;max-width:820px;font-size:12px;line-height:1.7;color:var(--muted)}
+.tech-empty{margin:0;font-size:12px;color:var(--muted)}
+
+.tech-choice-list{list-style:none;margin:0;padding:0;display:grid;gap:12px;max-width:820px}
+.tech-choice{border:1px solid var(--line);border-radius:6px;background:var(--surface);padding:12px 13px;display:grid;grid-template-columns:1fr 1.4fr;gap:12px;align-items:end}
+.tech-choice-kind{grid-column:1/-1;display:flex;align-items:center;gap:6px;font:9px var(--mono);text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.tech-choice .field-label{margin:0}
+.tech-choice select,.tech-choice input{width:100%;border:1px solid var(--line);border-radius:5px;padding:7px 9px;font-size:12px;color:var(--ink);background:var(--bg)}
+.tech-choice select:focus-visible,.tech-choice input:focus-visible{outline:2px solid #369b82;outline-offset:1px}
+
+.tech-data-model{max-width:820px;display:flex;flex-direction:column;gap:8px;border:1px solid var(--line);border-radius:6px;background:var(--surface);padding:12px 13px}
+.tech-prompt{margin:0;font-size:12px;line-height:1.7;color:var(--ink)}
+.tech-stage textarea{width:100%;resize:vertical;min-height:110px;border:1px solid var(--line);border-radius:6px;padding:10px 12px;font:inherit;font-size:12px;line-height:1.6;color:var(--ink);background:var(--bg)}
+.tech-stage textarea:focus-visible{outline:2px solid #369b82;outline-offset:1px}
+.tech-word-count{font:10px var(--mono);color:var(--muted);text-align:right}
+.tech-word-count .ok{color:var(--green-dark)}
+
+.tech-warning{display:flex;align-items:center;gap:6px;margin:0;font-size:11px;color:#a9663a}
+.tech-actions{display:flex;align-items:center;gap:10px}
+
+.tech-reveal-list{list-style:none;margin:0;padding:0;display:grid;gap:11px;max-width:820px}
+.tech-reveal{border:1px solid var(--line);border-left-width:3px;border-radius:6px;background:var(--surface);padding:11px 13px}
+.tech-reveal.strong{border-left-color:var(--green)}
+.tech-reveal.poor{border-left-color:#d99a6c}
+.tech-reveal.neutral{border-left-color:#c4cdd2}
+.tech-reveal-head{display:flex;align-items:center;flex-wrap:wrap;gap:9px}
+.tech-reveal-kind{font:9px var(--mono);text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.tech-reveal-head strong{font-size:13px;color:var(--ink)}
+.tech-fit{font-size:10px;font-weight:600;padding:2px 8px;border-radius:20px}
+.tech-fit.strong{color:var(--green-dark);background:var(--green-soft)}
+.tech-fit.poor{color:#a9663a;background:#fbf1e7}
+.tech-fit.neutral{color:var(--muted);background:#eef1f2}
+.tech-rank{margin-left:auto;font:9px var(--mono);color:var(--muted)}
+.tech-reveal-why{margin:7px 0 0;font-size:11px;line-height:1.6;color:var(--ink)}
+.tech-reveal-why span{color:var(--muted)}
+.tech-reveal-note{margin:6px 0 0;font-size:11px;line-height:1.65;color:var(--muted)}
+.tech-trait-row{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.tech-trait{font:9px var(--mono);padding:2px 7px;border-radius:20px;border:1px solid var(--line);color:var(--muted);background:var(--bg);opacity:.6}
+.tech-trait.active{opacity:1;font-weight:600}
+.tech-trait.fit.active{color:var(--green-dark);background:var(--green-soft);border-color:#cfe7dc}
+.tech-trait.avoid.active{color:#a9663a;background:#fbf1e7;border-color:#eddcc9}
+
+.tech-reveal-model{max-width:820px;border:1px solid var(--line);border-radius:6px;background:var(--surface);padding:11px 13px}
+.tech-reveal-model p{margin:6px 0 0;font-size:12px;line-height:1.7;color:var(--ink);white-space:pre-wrap}
+.tech-handoff{display:flex;align-items:center;gap:6px;margin:0;font-size:11px;color:var(--green-dark)}
+
+@media (max-width:760px){
+  .tech-stage{margin:0 20px;padding:22px 0}
+  .tech-choice{grid-template-columns:1fr}
+}

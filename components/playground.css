@@ -86,3 +86,37 @@
     flex-basis: 100%;
   }
 }
+
+/* v2.2: the lesson wall clock in the workspace heading and the blank-canvas badge. */
+.wall-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid #dbe6e0;
+  border-radius: 4px;
+  background: var(--green-soft);
+  color: var(--green-dark);
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.wall-clock.over {
+  border-color: #eddcc9;
+  background: #fbf1e7;
+  color: #a9663a;
+}
+
+.blank-canvas-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border: 1px solid #dbe6e0;
+  border-radius: 4px;
+  background: var(--green-soft);
+  color: var(--green-dark);
+  font-size: 9px;
+  font-weight: 500;
+  white-space: nowrap;
+}
