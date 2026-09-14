@@ -1,6 +1,18 @@
 # Systemlab
 
+MIT licensed. Built by Abdelrahman Mohamed.
+
 A Next.js system design trainer: a 70-lesson curriculum across 12 chapters, an editable architecture canvas, a deterministic discrete-event simulation engine that models the things that actually break systems, and a learning loop that makes you estimate before you run, defend your design in writing, and replay lessons at new numbers.
+
+**Live:** https://system-design-playground-pi.vercel.app
+
+| Lesson workspace | Alternatives after a check |
+|---|---|
+| ![A lesson with the mission panel, canvas and results](docs/screenshots/lesson.png) | ![Counterfactual designs compared on cost and latency](docs/screenshots/alternatives.png) |
+
+| Blank-canvas design brief | Voice mock interview | Estimation gym |
+|---|---|---|
+| ![A brief with typed clarifying questions](docs/screenshots/brief.png) | ![The mock interview setup with phase clocks](docs/screenshots/mock.png) | ![A back-of-envelope drill](docs/screenshots/gym.png) |
 
 ## Run locally
 
