@@ -503,3 +503,43 @@ describe("POST /api/grade", () => {
     vi.resetModules();
   });
 });
+
+describe("output token budget", () => {
+  async function captureConfig(
+    run: (client: GeminiClient) => Promise<unknown>,
+    payload: object
+  ): Promise<{ maxOutputTokens?: number }> {
+    let seen: { maxOutputTokens?: number } = {};
+    const fakeClient: GeminiClient = {
+      models: {
+        generateContent: async (params: { config?: { maxOutputTokens?: number } }) => {
+          seen = params.config ?? {};
+          return { text: JSON.stringify(payload) };
+        },
+      },
+    };
+    await run(fakeClient);
+    return seen;
+  }
+
+  // gemini-3.x flash is a thinking model: thinking tokens are drawn from the
+  // SAME maxOutputTokens budget as the JSON answer. Observed thinking for these
+  // prompts varies widely run to run (317-671 tokens for follow-ups alone), so a
+  // budget with no headroom truncates the JSON mid-string and JSON.parse fails
+  // with "not valid JSON" -> the route 502s. Keep generous headroom.
+  it("gives follow-ups enough headroom for thinking plus JSON", async () => {
+    const config = await captureConfig(
+      (client) => generateFollowUps(makeLesson(), longDesign, client),
+      { followUps: ["a?", "b?", "c?"] }
+    );
+    expect(config.maxOutputTokens).toBeGreaterThanOrEqual(4000);
+  });
+
+  it("gives grading enough headroom for thinking plus JSON", async () => {
+    const config = await captureConfig(
+      (client) => gradeWithGemini(makeLesson(), { design: longDesign, followUps: [] }, client),
+      { items: [], critique: "ok" }
+    );
+    expect(config.maxOutputTokens).toBeGreaterThanOrEqual(8000);
+  });
+});

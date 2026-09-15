@@ -213,7 +213,10 @@ export async function gradeWithGemini(
     contents,
     schema: GRADE_JSON_SCHEMA,
     parse: (value) => GradeSchema.parse(value),
-    maxOutputTokens: 4000,
+    // Thinking tokens are drawn from this same budget on gemini-3.x flash, and
+    // grading reasons over every rubric item before emitting JSON. Without wide
+    // headroom the JSON truncates mid-string and parsing fails. See gemini.ts.
+    maxOutputTokens: 12000,
   });
 
   const total = scoreTotal(lesson, grade.items);
@@ -294,7 +297,10 @@ export async function generateFollowUps(
     contents,
     schema: FOLLOWUPS_JSON_SCHEMA,
     parse: (value) => FollowUpsSchema.parse(value),
-    maxOutputTokens: 1000,
+    // Same thinking-shares-the-budget constraint as grading above: observed
+    // thinking alone ran 317-671 tokens for this prompt, against a former cap
+    // of 1000, so a long think truncated the JSON. See gemini.ts.
+    maxOutputTokens: 4000,
   });
 
   return result.followUps;
