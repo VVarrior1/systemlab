@@ -311,6 +311,8 @@ export function MockInterview() {
   const scriptIndex = useRef(0);
   const askingRef = useRef(false);
   const workerRef = useRef<Worker | null>(null);
+  /** The canvas as it was when `result` was measured, so metric labels match the run even after later edits. */
+  const ranGraph = useRef<Architecture | null>(null);
   const transcriptEnd = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => { sessionRef.current = session; }, [session]);
@@ -382,6 +384,7 @@ export function MockInterview() {
     setError("");
     try {
       const output = await simulate(architecture, workload);
+      ranGraph.current = architecture;
       setResult(output);
       setLastRun(compactRun(output));
     } catch (issue) {
@@ -503,6 +506,7 @@ export function MockInterview() {
           context: {
             canvas: summarizeCanvas(architecture),
             lastRun: summarizeRun(lastRun),
+            metrics: runMetrics(result, ranGraph.current ?? architecture),
             rationales,
             dataModel,
             stats: { ...stats, secondsPerPhase: current.phaseSeconds },
@@ -527,7 +531,7 @@ export function MockInterview() {
       setThinking(false);
       askingRef.current = false;
     }
-  }, [architecture, dataModel, deliver, lastRun, lesson.id, rationales, scriptedLine, selfMode]);
+  }, [architecture, dataModel, deliver, lastRun, lesson.id, rationales, result, scriptedLine, selfMode]);
 
   // ---------------------------------------------------------------- the candidate's turn
 
@@ -652,6 +656,7 @@ export function MockInterview() {
           context: {
             canvas: summarizeCanvas(architecture),
             lastRun: summarizeRun(lastRun),
+            metrics: runMetrics(result, ranGraph.current ?? architecture),
             rationales,
             dataModel,
             stats: { ...stats, secondsPerPhase: current.phaseSeconds },
