@@ -23,3 +23,11 @@
 .shard-metrics .field-label{margin-bottom:4px}
 
 .connect-limit-note{font-size:9.5px;color:var(--muted);line-height:1.5;margin-top:4px}
+
+/* Simplify pass: tools float in the canvas; node cards carry one spec line until measured. */
+.canvas-tools{position:absolute;z-index:4;top:10px;left:10px;display:flex;gap:1px;background:#fff;border:1px solid #e3e9e8;border-radius:5px;padding:2px;box-shadow:0 1px 4px #30413d0b}
+.canvas-tools .icon-button{width:26px;height:26px}
+.system-node.node-unmeasured{min-height:0}
+.node-kind{font-size:8px}
+.node-spec{font-size:9px}
+.node-utilization>span{font-size:8px}

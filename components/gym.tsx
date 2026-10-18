@@ -122,11 +122,10 @@ export function Gym() {
     <Shell>
       <header className="topbar">
         <div className="breadcrumb"><span>Personal workspace</span><ArrowRight size={12} /><span>Estimation gym</span></div>
-        <span className="topbar-note"><span className="tiny-dot" />Back-of-envelope drills</span>
       </header>
       <div className="library-page gym-page">
         <div className="gym-heading">
-          <span className="eyebrow">DUMBBELL FOR YOUR NUMBER SENSE</span>
+          <span className="eyebrow">BACK-OF-ENVELOPE DRILLS</span>
           <h1><Dumbbell size={22} /> Estimation gym</h1>
           <p>
             Every design interview turns on numbers you should be able to produce in seconds: QPS from DAU, storage

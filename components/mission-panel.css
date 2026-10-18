@@ -65,3 +65,18 @@
 .blank-start p { margin: 0; font-size: 10px; line-height: 1.6; color: var(--muted); }
 .blank-start .text-button { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; }
 .blank-start-badge { display: inline-flex; align-items: center; gap: 5px; font: 9px var(--mono); text-transform: uppercase; letter-spacing: .04em; color: var(--green-dark); background: var(--green-soft); border-radius: 20px; padding: 3px 9px; }
+
+/* Simplify pass */
+.mission-tabs button{white-space:nowrap}
+.mission-brief{margin-bottom:20px}
+.mission-body .estimation-panel{margin-top:0}
+.mission-criteria{margin-top:4px}
+.disclosure-button{display:inline-flex;align-items:center;gap:6px;border:0;background:none;padding:4px 0;margin-top:14px;color:#8a9893;font-size:10px;font-weight:500}
+.disclosure-button:hover{color:var(--green)}
+.disclosure-button svg{color:currentColor}
+.mission-rules{margin:8px 0 4px}
+.assessment-status{margin:14px 0 0}
+.mission-options{margin-top:18px;border-top:1px solid var(--line);padding-top:4px}
+.mission-options .disclosure-button{margin-top:8px}
+.mission-options-body .blank-start{margin-top:10px;padding-top:0;border-top:0}
+.mission-options-body .remix-controls{margin-top:14px}

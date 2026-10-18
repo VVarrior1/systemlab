@@ -2,8 +2,8 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, Clock3, Download, Eraser, FlaskConical, GitBranch, LoaderCircle, Play, Plus, RotateCcw, Save, Shuffle, Timer, Trash2, X } from "lucide-react";
-import type { Architecture, EstimationId, FailureEvent, Lesson, LessonKind, NodeKind, ProgressRecord, SimulationResult, SystemNode, Workload } from "@/lib/types";
+import { ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, Clock3, Download, Eraser, GitBranch, LoaderCircle, Play, Plus, RotateCcw, Save, Shuffle, Timer, Trash2, X } from "lucide-react";
+import type { Architecture, EstimationId, FailureEvent, Lesson, LessonKind, NodeKind, ObjectiveMetric, ProgressRecord, SimulationResult, SystemNode, Workload } from "@/lib/types";
 import { lessons } from "@/lib/curriculum";
 import { createSystemNode, defaultWorkload, sandboxArchitecture, templates } from "@/lib/templates";
 import { getPersistenceWarning, readAttempts, readDesigns, readDraft, readProgress, recordAttempt, saveDesign, saveDraft, saveProgress } from "@/lib/persistence";
@@ -15,18 +15,31 @@ import { deriveRemixObjectives, remixLesson } from "@/lib/remix";
 import { LIMITS } from "@/lib/simulation/validate";
 import { useEditor } from "@/lib/editor-store";
 import { Shell } from "./shell";
-import { Modal, Tip } from "./ui";
+import { Modal } from "./ui";
 import { ArchitectureCanvas } from "./architecture-canvas";
-import { Results, type AlternativeView } from "./results";
-/** v2.3: `seedSpread` is added to Results by the results-view agent working concurrently on
- *  this file; cast until its prop type declares it, per the addendum's guidance. */
-const ResultsWithSpread = Results as unknown as (props: Record<string, unknown>) => ReturnType<typeof Results>;
+import { DEFAULT_FOCUS_METRICS, Results, type AlternativeView } from "./results";
 import { MissionPanel } from "./mission-panel";
 import { DefenseStage, type DefenseOutcome, type InterviewContext } from "./defense-stage";
 import { TechStage, type TechCommit } from "./tech-stage";
 import { ClarificationStage } from "./clarification-stage";
 
 const sandboxKinds: NodeKind[] = ["server", "load-balancer", "database", "cache", "queue", "cdn", "rate-limiter"];
+/** Which result tile shows each graded metric. maxQueueDepth has no tile: the chart plots it. */
+const objectiveTile: Partial<Record<ObjectiveMetric, string>> = {
+  p95: "p95", p99: "p99", throughput: "throughput", errorRate: "errorRate", successRate: "errorRate", rejectedRate: "rejectedRate",
+  cost: "cost", staleReadRate: "staleReadRate", duplicateRate: "duplicateRate", deadLetterRate: "deadLetterRate",
+  lostWrites: "lostWrites", conflictingWrites: "conflictingWrites", egressGb: "egressGb",
+};
+
+/** The tiles a lesson shows up front: the metrics its criteria grade, topped up to four with the basics. */
+function lessonFocusMetrics(lesson: Lesson | undefined): string[] {
+  if (!lesson) return DEFAULT_FOCUS_METRICS;
+  const focus: string[] = [];
+  for (const objective of lesson.objectives) { const tile = objectiveTile[objective.metric]; if (tile && !focus.includes(tile)) focus.push(tile); }
+  for (const tile of DEFAULT_FOCUS_METRICS) if (focus.length < 4 && !focus.includes(tile)) focus.push(tile);
+  return focus;
+}
+
 const failureKinds: FailureEvent["kind"][] = ["server", "database", "cache-flush", "slow-database", "slow-server", "region", "flapping", "error-burst", "partition", "slow-partition"];
 const failureKindLabels: Record<FailureEvent["kind"], string> = {
   server: "Server replica dies",
@@ -229,6 +242,10 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [saved, setSaved] = useState(false);
+  /** "Saved" shows briefly after an edit is stored, instead of a constant label. */
+  const [savedFlash, setSavedFlash] = useState(false);
+  const firstSave = useRef(true);
+  const [techOpen, setTechOpen] = useState(false);
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState(lesson?.title ?? "Untitled architecture");
   const [designId, setDesignId] = useState<string | null>(null);
@@ -288,7 +305,8 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
     setResult(null); setValidation(null); setCompleted(false); setBaseline(null); setBaselineWorkload(null); setResultWorkload(null);
     setResultRevision(-1); setError(""); setHintCount(0); setEstimationValues({}); setEstimationOutcomes(null);
     setAsked([]); setAlternatives(null); setAlternativesLoading(false); setRemixed(null); setRemixPreparing(false); setRemixCount(0);
-    setBlankCanvas(false); setBlankConfirmOpen(false); setTechCommit(null); setTechSkipped(false); setSeedSpread(null);
+    setBlankCanvas(false); setBlankConfirmOpen(false); setTechCommit(null); setTechSkipped(false); setSeedSpread(null); setTechOpen(false);
+    firstSave.current = true;
     setAttempts(lesson ? readAttempts(lesson.id) : 0);
     setLegacyCompletion(!!lesson && readProgress().some((record) => record.lessonId === lesson.id && !isCurrentProgress(record)));
     setCompleted(!!lesson && readProgress().some((record) => record.lessonId === lesson.id && isCurrentProgress(record)));
@@ -310,7 +328,12 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
     if (!ready || loadedKey.current !== storageKey) return;
     pendingDraft.current = { key: storageKey, architecture, workload };
     setSaved(false);
-    const timer = setTimeout(() => { const outcome = saveDraft(storageKey, architecture, workload); setSaved(outcome.ok); if (!outcome.ok) setError(outcome.error); }, 650);
+    const timer = setTimeout(() => {
+      const outcome = saveDraft(storageKey, architecture, workload); setSaved(outcome.ok);
+      if (!outcome.ok) setError(outcome.error);
+      else if (firstSave.current) firstSave.current = false;
+      else setSavedFlash(true);
+    }, 650);
     return () => clearTimeout(timer);
   }, [architecture, workload, ready, storageKey]);
 
@@ -319,6 +342,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
     window.addEventListener("pagehide", flush);
     return () => { window.removeEventListener("pagehide", flush); flush(); };
   }, []);
+  useEffect(() => { if (!savedFlash) return; const timer = setTimeout(() => setSavedFlash(false), 2200); return () => clearTimeout(timer); }, [savedFlash]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(""), 4000); return () => clearTimeout(timer); }, [toast]);
 
   const simulate = useCallback((graph: Architecture, traffic: Workload) => new Promise<SimulationResult>((resolve, reject) => {
@@ -553,8 +577,11 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
   const statusText = missionIssue
     ?? (stale ? "Architecture or traffic changed. Recheck required."
       : validation?.revision === revision ? (valid ? "All three assessment runs passed." : "Assessment incomplete: some targets failed.")
-        : result ? "Exploratory run only. Lesson criteria are not graded yet." : "Not assessed yet.");
+        : result ? "That was a practice run. Press Check solution to grade it." : "");
   const trafficDisabled = !ready || (!!lesson && !revealed);
+  /** Steady lessons keep the traffic-pattern picker inside Configure; the sandbox and pattern lessons show it inline. */
+  const patternInline = !lesson || (activeLesson?.workload.pattern ?? "steady") !== "steady" || workload.pattern !== "steady";
+  const focusMetrics = lessonFocusMetrics(activeLesson);
   const failures = failureRows(workload);
 
   // v2.2: the tech + data-model stage gates the defense for briefs and blank-canvas runs.
@@ -586,6 +613,12 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
   const setFailures = (next: FailureEvent[]) => setWorkload({ failures: next });
   const patchFailure = (index: number, patch: Partial<FailureEvent>) => setFailures(failures.map((row, i) => (i === index ? { ...row, ...patch } : row)));
 
+  // One primary action at a time: Run, then Check once a run exists, then the defense, then the next lesson.
+  const canCheck = !!lesson && !isWritten && revealed;
+  const checkIsNext = canCheck && !!result && !valid && !completed;
+  const runIsPrimary = !lesson || (!checkIsNext && !valid && !completed);
+  const nextStep = () => { const target = document.getElementById("lesson-next-step"); target?.scrollIntoView({ behavior: "smooth", block: "start" }); };
+  const budgetMinutes = lesson ? Math.round(WALL_CLOCK_BUDGET[lesson.kind] / 60) : 0;
   const heading = <div className="workspace-heading">
     <div>
       <div className="eyebrow">{lesson ? `CHAPTER ${String(lessons.filter((l) => l.number <= lesson.number).reduce((set, l) => set.add(l.chapter), new Set<string>()).size).padStart(2, "0")} / LESSON ${String(lesson.number).padStart(2, "0")}` : "YOUR IDEAS. UNDER LOAD."}</div>
@@ -593,12 +626,13 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
       <p>{lesson?.subtitle ?? "Build a system. Change the conditions. See what happens."}</p>
     </div>
     <div className="heading-actions">
-      {lesson && <span className={`wall-clock ${wallClock.overtime > 0 ? "over" : ""}`} title={`Interview budget: ${Math.round(WALL_CLOCK_BUDGET[lesson.kind] / 60)} minutes for this ${lesson.kind}`}>
-        <Timer size={13} />
-        {wallClock.started ? (wallClock.overtime > 0 ? `+${formatDuration(wallClock.overtime)} over` : `${formatDuration(wallClock.remaining)} left`) : `${Math.round(WALL_CLOCK_BUDGET[lesson.kind] / 60)} min budget`}
+      {lesson && <span className={`duration ${wallClock.overtime > 0 ? "over" : ""}`} title={`About ${lesson.minutes} minutes. Interview budget: ${budgetMinutes} minutes for this ${lesson.kind}; the clock starts on your first action.`}>
+        {wallClock.started ? <><Timer size={13} />{wallClock.overtime > 0 ? `+${formatDuration(wallClock.overtime)} over` : `${formatDuration(wallClock.remaining)} left`}</> : <><Clock3 size={13} />{lesson.minutes} min</>}
       </span>}
-      {lesson ? <span className="duration"><Clock3 size={14} />{lesson.minutes} min</span> : <button className="button" onClick={() => setTemplateOpen(true)}><GitBranch size={15} />Templates<ChevronDown size={13} /></button>}
-      {!isWritten && <button className="button primary run-button" onClick={() => run()} disabled={running || !ready || !revealed}>{running ? <LoaderCircle size={16} className="spin" /> : <Play size={15} fill="currentColor" />}{runLabel}</button>}
+      {!lesson && <button className="button" onClick={() => setTemplateOpen(true)}><GitBranch size={15} />Templates<ChevronDown size={13} /></button>}
+      {!isWritten && <button className={`button ${runIsPrimary ? "primary" : ""} run-button`} onClick={() => run()} disabled={running || !ready || !revealed}>{running ? <LoaderCircle size={16} className="spin" /> : <Play size={15} fill="currentColor" />}{runLabel}</button>}
+      {lesson && completed ? (nextLesson ? <Link className="button primary run-button" href={`/learn/${nextLesson.id}`}>Next lesson<ArrowRight size={15} /></Link> : <Link className="button primary run-button" href="/learn">Back to learning path<ArrowRight size={15} /></Link>)
+        : lesson && valid && !isWritten ? <button className="button primary run-button" onClick={nextStep}>Continue to defense<ArrowRight size={15} /></button> : null}
     </div>
   </div>;
 
@@ -619,7 +653,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
       outcomes: estimationOutcomes,
       required: estimationRequired,
     }}
-    check={isWritten ? null : { label: valid ? "Requirements passed" : "Check solution", disabled: running || !ready || remixPreparing || estimationBlocked, passed: valid, running, onClick: () => run(true) }}
+    check={isWritten ? null : { label: valid ? "Requirements passed" : "Check solution", disabled: running || !ready || remixPreparing || estimationBlocked, passed: valid, running, onClick: () => run(true), emphasis: checkIsNext }}
     remix={lesson.remixable && !isWritten ? { active: !!remixed, factor: remixed?.factor, preparing: remixPreparing, onRemix: startRemix, onReset: clearRemix } : null}
     blankStart={lesson.kind === "sim" ? {
       active: blankCanvas,
@@ -633,6 +667,13 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
     onOpenReading={() => setConceptOpen(true)}
   /> : null;
 
+  const patternSelect = <select aria-label="Traffic pattern" value={workload.pattern} disabled={trafficDisabled} onChange={(e) => setWorkload({ pattern: e.target.value as Workload["pattern"] })}>
+    <option value="steady">Steady traffic</option>
+    <option value="spike">Traffic spike</option>
+    <option value="ramp">Gradual ramp</option>
+    <option value="flash">Flash crowd</option>
+  </select>;
+
   const trafficControls = <>
     <div className="workload-bar">
       <div className="workload-main">
@@ -640,17 +681,11 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
         <input type="range" aria-label="Traffic rate" min="1" max={LIMITS.requestRate} step="1" value={workload.requestRate} disabled={trafficDisabled} onChange={(e) => setWorkload({ requestRate: Number(e.target.value) })} />
         <div className="traffic-value"><input aria-label="Requests per second" type="number" min="1" max={LIMITS.requestRate} disabled={trafficDisabled} value={workload.requestRate} onChange={(e) => setWorkload({ requestRate: clamp(Number(e.target.value), 1, LIMITS.requestRate) })} /><span>req/s</span></div>
       </div>
-      <div className="workload-pattern">
-        <select aria-label="Traffic pattern" value={workload.pattern} disabled={trafficDisabled} onChange={(e) => setWorkload({ pattern: e.target.value as Workload["pattern"] })}>
-          <option value="steady">Steady traffic</option>
-          <option value="spike">Traffic spike</option>
-          <option value="ramp">Gradual ramp</option>
-          <option value="flash">Flash crowd</option>
-        </select>
-      </div>
-      <button className={`text-button workload-options ${workloadOpen ? "active" : ""}`} aria-expanded={workloadOpen} onClick={() => setWorkloadOpen(!workloadOpen)}>Configure<ChevronDown size={13} /></button>
+      {patternInline && <div className="workload-pattern">{patternSelect}</div>}
+      <button className={`text-button workload-options ${workloadOpen ? "active" : ""}`} aria-expanded={workloadOpen} aria-controls="workload-settings" onClick={() => setWorkloadOpen(!workloadOpen)}>{patternInline ? "Configure" : "Traffic settings"}<ChevronDown size={13} className={workloadOpen ? "flip" : ""} /></button>
     </div>
-    {workloadOpen && <div className="workload-settings">
+    {workloadOpen && <div className="workload-settings" id="workload-settings">
+      {!patternInline && <label className="field-label">Pattern{patternSelect}</label>}
       <label className="field-label">Read traffic <span>{Math.round(workload.readRatio * 100)}%</span><input aria-label="Read traffic percentage" type="range" min="0" max="100" disabled={trafficDisabled} value={Math.round(workload.readRatio * 100)} onChange={(e) => setWorkload({ readRatio: Number(e.target.value) / 100 })} /></label>
       <label className="field-label">Duration<select aria-label="Simulation duration" value={workload.duration} disabled={trafficDisabled} onChange={(e) => setWorkload({ duration: Number(e.target.value) })}><option value="15">15 seconds</option><option value="30">30 seconds</option><option value="60">60 seconds</option></select></label>
       <label className="field-label">Seed<input type="number" aria-label="Simulation seed" min="1" max="999999" disabled={trafficDisabled} value={workload.seed} onChange={(e) => setWorkload({ seed: clamp(Math.round(Number(e.target.value)), 1, 999999) })} /></label>
@@ -681,10 +716,8 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
     <header className="topbar">
       <div className="breadcrumb"><Link href={lesson ? "/learn" : "/sandbox"}>{lesson ? "Learning path" : "Workspace"}</Link><ChevronRight size={13} /><span>{lesson?.chapter ?? "Sandbox"}</span></div>
       <div className="topbar-right">
-        <span className="save-status">{saved ? <CheckCheck size={14} /> : <Clock3 size={13} />}{saved ? "Saved locally" : "Saving..."}</span>
-        <span className="topbar-divider" />
-        <Tip label="Export architecture"><button className="icon-button" aria-label="Export architecture" onClick={exportDesign} disabled={!ready}><Download size={17} /></button></Tip>
-        <button className="button small" onClick={() => setSaveOpen(true)} disabled={!ready}><Save size={14} />Save design</button>
+        <span className="save-status" role="status">{savedFlash && saved ? <><CheckCheck size={14} />Saved</> : null}</span>
+        <button className="button small quiet" onClick={() => setSaveOpen(true)} disabled={!ready}><Save size={14} />Save design</button>
       </div>
     </header>
     {heading}
@@ -704,42 +737,51 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
           {trafficControls}
           {isBrief && lesson && clarifications.length > 0 && <div className="brief-stage"><ClarificationStage lesson={lesson} asked={asked} onAsk={askClarification} revealed={revealed} /></div>}
           {ready ? <ArchitectureCanvas result={stale ? null : result} running={running} allowedKinds={activeLesson?.allowedKinds ?? sandboxKinds} onReset={() => setResetOpen(true)} /> : <div className="canvas-loading"><LoaderCircle size={23} className="spin" />Opening architecture...</div>}
-          <ResultsWithSpread
+          <Results
             result={result} baseline={baseline} workload={resultWorkload} baselineWorkload={baselineWorkload}
             onPin={() => { setBaseline(result); setBaselineWorkload(resultWorkload); setToast("Baseline pinned for comparison."); }}
             onUnpin={() => { setBaseline(null); setBaselineWorkload(null); }}
             stale={stale} running={running} alternatives={alternatives} alternativesLoading={alternativesLoading}
-            seedSpread={seedSpread}
+            seedSpread={seedSpread} focusMetrics={focusMetrics}
           />
         </div>
       </div>
-      {showTechStage && activeLesson && <TechStage
-        lesson={activeLesson}
-        architecture={architecture}
-        workload={workload}
-        required={techRequired}
-        onCommit={setTechCommit}
-        onSkip={() => setTechSkipped(true)}
-      />}
-      {lesson && activeLesson && revealed && <DefenseStage
-        lesson={activeLesson}
-        nextLesson={nextLesson ? { id: nextLesson.id, title: nextLesson.title } : undefined}
-        enabled={objectivesPassed && (completed || techDone)}
-        completed={completed}
-        hintCount={hintCount}
-        onComplete={completeLesson}
-        onActive={setDefenseActive}
-        remixActive={!!remixed}
-        interviewContext={interviewContext}
-        wallClockOvertime={wallClock.overtime}
-        estimationOutcomes={estimationOutcomes}
-      />}
+      <div id="lesson-next-step" className="lesson-next-step">
+        {showTechStage && activeLesson && (techRequired || techOpen || techCommit ? <TechStage
+          lesson={activeLesson}
+          architecture={architecture}
+          workload={workload}
+          required={techRequired}
+          onCommit={setTechCommit}
+          onSkip={() => setTechSkipped(true)}
+        /> : <section className="tech-stage tech-stage-collapsed" aria-label="Optional technology step">
+          <div><strong>Optional: name the technologies</strong><p>Pick a concrete technology for each component and sketch the data model before you defend the design.</p></div>
+          <div className="tech-stage-collapsed-actions">
+            <button className="button" aria-expanded={false} onClick={() => setTechOpen(true)}>Open this step<ChevronDown size={13} /></button>
+            <button className="button primary" onClick={() => setTechSkipped(true)}>Skip to the defense<ArrowRight size={14} /></button>
+          </div>
+        </section>)}
+        {lesson && activeLesson && revealed && <DefenseStage
+          lesson={activeLesson}
+          nextLesson={nextLesson ? { id: nextLesson.id, title: nextLesson.title } : undefined}
+          enabled={objectivesPassed && (completed || techDone)}
+          lockedReason={objectivesPassed && !techDone ? "Finish or skip the technology step above to unlock the reflection and defense." : undefined}
+          completed={completed}
+          hintCount={hintCount}
+          onComplete={completeLesson}
+          onActive={setDefenseActive}
+          remixActive={!!remixed}
+          interviewContext={interviewContext}
+          wallClockOvertime={wallClock.overtime}
+          estimationOutcomes={estimationOutcomes}
+        />}
+      </div>
     </>}
 
-    <footer className="workspace-footer"><span><FlaskConical size={13} />A little less theory. A little more discovery.</span>{lesson ? <Link href="/sandbox">Explore freely in the sandbox<ArrowRight size={13} /></Link> : <Link href="/learn"><ArrowLeft size={13} />Back to the learning path</Link>}</footer>
+    <footer className="workspace-footer">{lesson ? <Link href="/sandbox">Explore freely in the sandbox<ArrowRight size={13} /></Link> : <Link href="/learn"><ArrowLeft size={13} />Back to the learning path</Link>}</footer>
     {toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}
 
-    <Modal open={saveOpen} onOpenChange={setSaveOpen} title="Save your design" description="Keep this architecture in your personal design library."><form onSubmit={(e) => { e.preventDefault(); save(); }}><label className="field-label">Design name<input autoFocus value={saveName} onChange={(e) => setSaveName(e.target.value)} maxLength={80} placeholder="My architecture" required /></label><div className="modal-actions"><button type="button" className="button" onClick={() => setSaveOpen(false)}>Cancel</button><button type="submit" className="button primary" disabled={!saveName.trim()}><Save size={15} />Save design</button></div></form></Modal>
+    <Modal open={saveOpen} onOpenChange={setSaveOpen} title="Save your design" description="Keep this architecture in your personal design library."><form onSubmit={(e) => { e.preventDefault(); save(); }}><label className="field-label">Design name<input autoFocus value={saveName} onChange={(e) => setSaveName(e.target.value)} maxLength={80} placeholder="My architecture" required /></label><div className="modal-actions"><button type="button" className="text-button modal-export" onClick={exportDesign}><Download size={14} />Download as JSON</button><button type="button" className="button" onClick={() => setSaveOpen(false)}>Cancel</button><button type="submit" className="button primary" disabled={!saveName.trim()}><Save size={15} />Save design</button></div></form></Modal>
     <Modal open={resetOpen} onOpenChange={setResetOpen} title="Reset this architecture?" description="This replaces the current draft with the starting system. Designs already saved to your library are kept."><div className="modal-actions"><button className="button" onClick={() => setResetOpen(false)}>Keep working</button><button className="button primary" onClick={reset}><RotateCcw size={15} />Reset architecture</button></div></Modal>
     <Modal open={blankConfirmOpen} onOpenChange={setBlankConfirmOpen} title="Start from a blank canvas?" description="Your current architecture for this lesson is replaced by the traffic source alone. Designs already saved to your library are kept."><div className="modal-actions"><button className="button" onClick={() => setBlankConfirmOpen(false)}>Keep my design</button><button className="button primary" onClick={startBlankCanvas}><Eraser size={15} />Clear the canvas</button></div></Modal>
     <Modal open={templateOpen} onOpenChange={setTemplateOpen} title="Choose a starting point" description="A template replaces your current draft. Save your design first if you want to keep it."><div className="template-list">{templates.map((template) => <button key={template.id} onClick={() => { cancelRun(); if (queryId) { pendingDraft.current = null; saveDraft("sandbox", template.architecture, template.workload); router.replace("/sandbox"); } else initialize(template.architecture, template.workload); resetAssessment(); setTemplateOpen(false); setDesignId(null); setSaveName(template.name); }}><span className="template-icon"><GitBranch size={23} /></span><span><strong>{template.name}</strong><small>{template.description}</small></span><ArrowRight size={17} /></button>)}</div></Modal>

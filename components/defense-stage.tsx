@@ -282,8 +282,10 @@ export interface DefenseOutcome {
   dataModelScore?: number;
 }
 
-export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount, onComplete, onActive, remixActive, interviewContext, wallClockOvertime, estimationOutcomes }: {
+export function DefenseStage({ lesson, nextLesson, enabled, lockedReason, completed, hintCount, onComplete, onActive, remixActive, interviewContext, wallClockOvertime, estimationOutcomes }: {
   lesson: Lesson;
+  /** Why the stage is still locked, when it is not the objectives (e.g. the optional tech step). */
+  lockedReason?: string;
   nextLesson?: { id: string; title: string };
   enabled: boolean;
   completed: boolean;
@@ -615,7 +617,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, completed, hintCount
     return <div className="defense-stage locked-state">
       <div className="panel-empty">
         <Lock size={22} strokeWidth={1.3} />
-        <p>Pass every objective in Check to unlock the reflection and defense for this lesson.</p>
+        <p>{lockedReason ?? "Pass every objective in Check to unlock the reflection and defense for this lesson."}</p>
       </div>
     </div>;
   }

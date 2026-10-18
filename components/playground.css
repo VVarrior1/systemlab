@@ -120,3 +120,31 @@
   font-weight: 500;
   white-space: nowrap;
 }
+
+/* Simplify pass: quieter chrome, one primary action, disclosures for depth. */
+.main-nav{gap:2px}
+.nav-group-label{margin:16px 10px 5px;font:8px var(--mono);color:#9aa69f}
+.nav-item.nav-sub{height:33px;font-size:11.5px}
+.sidebar-section-label{margin-top:26px}
+.sidebar-section-label span{font-family:inherit}
+.chapter-lesson-count{background:none!important;color:#bcc5c0!important;font-weight:400}
+.button.quiet{border-color:transparent;background:transparent}
+.button.quiet:hover:not(:disabled){border-color:#dfe5e7;background:#fff}
+.save-status:empty{display:none}
+.duration.over{color:#b0745b}
+.heading-actions{gap:14px}
+.flip{transform:rotate(180deg)}
+.workspace-footer{justify-content:flex-end}
+.modal-actions .modal-export{margin-right:auto;font-size:11px}
+.lesson-next-step{scroll-margin-top:16px}
+.tech-stage.tech-stage-collapsed{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.tech-stage-collapsed strong{display:block;font-size:13px;font-weight:600;color:#3e5148}
+.tech-stage-collapsed p{margin:4px 0 0;font-size:11px;color:#7d8a84;max-width:560px}
+.tech-stage-collapsed-actions{display:flex;gap:8px;flex-wrap:wrap}
+@media (max-width: 760px) {
+  .lab-column{order:2}
+  .mission-panel{order:1;border-top:0;border-bottom:1px solid #e1e8e4}
+  .heading-actions{flex-direction:row;justify-content:flex-start;flex-wrap:wrap;gap:10px}
+}
+.main-nav{margin-top:26px}
+.mission-bottom>.estimation-gate-note{font-size:11px;line-height:1.5;color:#6c7b76;margin:0 0 9px}
