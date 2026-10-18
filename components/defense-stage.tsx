@@ -20,6 +20,7 @@ import {
 import type { EstimationId, Lesson, RubricItem } from "@/lib/types";
 import type { EstimationOutcome } from "@/lib/estimation";
 import { applyPenalties, type Deduction } from "@/lib/defense-scoring";
+import { followUpsBody, gradeBody, practiceInterviewBody, type FollowUpAnswer, type InterviewContext, type NodeMetricSummary } from "@/lib/interview-payload";
 
 // ---------------------------------------------------------------- shuffle
 
@@ -209,37 +210,14 @@ type GradeState =
   | { status: "graded"; result: GradedResult }
   | { status: "self" };
 
-interface FollowUpAnswer { question: string; answer: string }
 
 // ---------------------------------------------------------------- live interviewer
 
 export type InterviewIntent = "probe" | "pushback" | "escalate" | "clarify";
 export interface InterviewTurn { role: "interviewer" | "candidate"; text: string; intent?: InterviewIntent }
-/** The canvas-and-run snapshot the playground hands to the interviewer.
- *  Mirrors the server-side InterviewContext in lib/interview.ts; kept local so no server module
- *  reaches the client bundle. Anything the route rejects becomes a 400, which falls back to static. */
-export interface TechRationale { nodeId: string; label: string; kind: string; technology: string; why: string; expected: string }
-/** v2.3: the last check's per-node measurements, handed to the interviewer alongside the rationales
- *  so it can call out contradictions; also shown next to the learner's claims in self mode. */
-export interface NodeMetricSummary {
-  nodeId: string;
-  label: string;
-  kind: string;
-  utilization: number;
-  processedPerSec: number;
-  errors: number;
-  hitRate?: number;
-  shardSpread?: number[];
-}
-export interface InterviewContext {
-  architecture: string;
-  result: string;
-  rationales?: TechRationale[];
-  dataModel?: string;
-  estimation?: string;
-  blankCanvas?: boolean;
-  metrics?: NodeMetricSummary[];
-}
+/** The canvas-and-run snapshot the playground hands to the interviewer. The structured shape lives in
+ *  lib/interview-payload.ts, which also maps it onto the wire shape the route validates. */
+export type { InterviewContext, NodeMetricSummary, TechRationale } from "@/lib/interview-payload";
 
 /** Renders one node's measured metrics as a short human-readable string for the self-mode comparison. */
 function formatNodeMetric(metric: NodeMetricSummary): string {
@@ -425,12 +403,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, lockedReason, comple
       const res = await fetch("/api/interview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          lessonId: lesson.id,
-          stage: "turn",
-          transcript: turns.map((turn) => ({ role: turn.role, text: turn.text })),
-          context: interviewContext,
-        }),
+        body: JSON.stringify(practiceInterviewBody(lesson.id, "turn", turns, interviewContext)),
       });
       if (!res.ok) return null;
       const body = (await res.json()) as { question?: string; intent?: InterviewIntent; round?: number; done?: boolean };
@@ -453,7 +426,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, lockedReason, comple
       const res = await fetch("/api/grade", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lessonId: lesson.id, stage: "followups", answers: { design } }),
+        body: JSON.stringify(followUpsBody(lesson.id, design)),
       });
       if (res.ok) {
         const body = (await res.json()) as { mode: "graded"; followUps: string[] };
@@ -536,21 +509,12 @@ export function DefenseStage({ lesson, nextLesson, enabled, lockedReason, comple
         ? await fetch("/api/interview", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            lessonId: lesson.id,
-            stage: "grade",
-            transcript: transcript.map((turn) => ({ role: turn.role, text: turn.text })),
-            context: interviewContext,
-          }),
+          body: JSON.stringify(practiceInterviewBody(lesson.id, "grade", transcript, interviewContext!)),
         })
         : await fetch("/api/grade", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            lessonId: lesson.id,
-            stage: "grade",
-            answers: { design, followUps: followUpQuestions.map((question, index): FollowUpAnswer => ({ question, answer: followUps[index] ?? "" })) },
-          }),
+          body: JSON.stringify(gradeBody(lesson.id, design, followUpQuestions.map((question, index): FollowUpAnswer => ({ question, answer: followUps[index] ?? "" })))),
         });
       if (res.ok) {
         const body = (await res.json()) as GradedResult;
