@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, ChevronRight, CircleAlert, Cpu, Database, Lightbulb, SkipForward } from "lucide-react";
 import type { Architecture, Lesson, NodeKind, SystemNode, Workload } from "@/lib/types";
 import { suggestFor, techCatalog, workloadTraits, type TechOption, type Trait } from "@/lib/tech-catalog";
@@ -18,6 +18,9 @@ export interface TechCommit {
   techChoices: TechChoice[];
   dataModel: string;
 }
+
+/** Focus target when the step opens or is committed. */
+export const TECH_HEADING_ID = "tech-stage-heading";
 
 const DEFAULT_DATA_MODEL_PROMPT = "List the main entities, their primary keys, the 3 most important query patterns, and how the data grows";
 const WHY_MAX = 160;
@@ -84,6 +87,13 @@ export function TechStage({ lesson, architecture, workload, required, onCommit, 
   const [checklist, setChecklist] = useState<Record<string, boolean>>({});
   const [committed, setCommitted] = useState<TechCommit | null>(null);
   const [touched, setTouched] = useState(false);
+  // Committing swaps the form (and its focused button) for the reveal: focus follows to the heading.
+  const focusHeading = useRef(false);
+  useEffect(() => {
+    if (!focusHeading.current || !committed) return;
+    focusHeading.current = false;
+    document.getElementById(TECH_HEADING_ID)?.focus();
+  }, [committed]);
 
   useEffect(() => {
     setSelection({});
@@ -133,13 +143,14 @@ export function TechStage({ lesson, architecture, workload, required, onCommit, 
       };
     });
     const commitValue: TechCommit = { techChoices, dataModel: dataModel.trim() };
+    focusHeading.current = true;
     setCommitted(commitValue);
     onCommit(commitValue);
   }
 
   if (committed) {
     return <section className="tech-stage committed">
-      <div className="tech-heading">
+      <div className="tech-heading" id={TECH_HEADING_ID} role="heading" aria-level={2} tabIndex={-1}>
         <span className="tech-icon"><Cpu size={17} /></span>
         <span>Technology and data model</span>
         <span className="tech-badge committed"><CheckCircle2 size={13} />Committed</span>
@@ -182,7 +193,7 @@ export function TechStage({ lesson, architecture, workload, required, onCommit, 
   }
 
   return <section className="tech-stage">
-    <div className="tech-heading">
+    <div className="tech-heading" id={TECH_HEADING_ID} role="heading" aria-level={2} tabIndex={-1}>
       <span className="tech-icon"><Cpu size={17} /></span>
       <span>Technology and data model</span>
       <span className={`tech-badge ${required ? "required" : ""}`}>{required ? "Required before the defense" : "Optional step"}</span>

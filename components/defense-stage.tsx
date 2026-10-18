@@ -235,6 +235,9 @@ const intentLabels: Record<InterviewIntent, string> = {
   clarify: "Clarify",
 };
 
+/** Focus target for the first heading the stage shows (Reflection, Lesson complete, or the lock note). */
+export const DEFENSE_HEADING_ID = "defense-heading";
+
 const DESIGN_MIN_WORDS = 60;
 const FOLLOWUP_MIN_WORDS = 20;
 const TURN_MIN_WORDS = 15;
@@ -581,7 +584,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, lockedReason, comple
     return <div className="defense-stage locked-state">
       <div className="panel-empty">
         <Lock size={22} strokeWidth={1.3} />
-        <p>{lockedReason ?? "Pass every objective in Check to unlock the reflection and defense for this lesson."}</p>
+        <p id={DEFENSE_HEADING_ID} tabIndex={-1}>{lockedReason ?? "Pass every objective in Check to unlock the reflection and defense for this lesson."}</p>
       </div>
     </div>;
   }
@@ -593,7 +596,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, lockedReason, comple
       : [];
     return <div className="defense-stage">
       <div className="reflection-section completion-section">
-        <div className="reflection-heading">
+        <div className="reflection-heading" id={DEFENSE_HEADING_ID} role="heading" aria-level={2} tabIndex={-1}>
           <span className="reflection-icon"><Sparkles size={17} /></span>
           <span>Lesson complete</span>
           {outcome && <span className="completion-badge"><CheckCircle2 size={13} />{outcome.defenseMode === "graded" ? `${outcome.defenseScore}/100 graded` : `${outcome.defenseScore}/100 self-assessed`}</span>}
@@ -626,7 +629,7 @@ export function DefenseStage({ lesson, nextLesson, enabled, lockedReason, comple
 
   return <div className="defense-stage">
     <div className="reflection-section">
-      <div className="reflection-heading">
+      <div className="reflection-heading" id={DEFENSE_HEADING_ID} role="heading" aria-level={2} tabIndex={-1}>
         <span className="reflection-icon"><MessageSquareText size={17} /></span>
         <span>Reflection</span>
         {attempt > 1 && !reflectionSolved && <span className="completion-badge">Attempt {attempt}</span>}

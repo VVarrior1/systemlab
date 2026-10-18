@@ -1,11 +1,12 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowRight, Check, CheckCheck, ChevronDown, ChevronRight, Circle, Clock3, ExternalLink, Eraser, Lightbulb, LoaderCircle, RotateCcw, Shuffle, ShieldCheck } from "lucide-react";
 import type { Lesson } from "@/lib/types";
 import type { EstimationId, EstimationPrompt } from "@/lib/types";
 import type { EstimationOutcome, EstimationValues } from "@/lib/estimation";
 import { estimationComplete } from "@/lib/estimation";
-import { EstimationPanel } from "./estimation-panel";
+import { HINT_PENALTY } from "@/lib/defense-scoring";
+import { EstimationPanel, isBaselineLesson } from "./estimation-panel";
 import { tabPanelProps, tabProps } from "./ui";
 
 type Tab = "mission" | "learn" | "deep-dive";
@@ -41,6 +42,20 @@ export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummar
   const [tab, setTab] = useState<Tab>(defaultTab ?? "mission");
   const [gradingOpen, setGradingOpen] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
+  // Hints beyond the first cost points at the defense, so those ask first; the first one is free.
+  const [hintConfirm, setHintConfirm] = useState(false);
+  const hintButton = useRef<HTMLButtonElement>(null);
+  const hintConfirmButton = useRef<HTMLButtonElement>(null);
+  const focusNewHint = useRef(false);
+  const hintList = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (hintConfirm) hintConfirmButton.current?.focus(); }, [hintConfirm]);
+  useEffect(() => {
+    if (!focusNewHint.current) return;
+    focusNewHint.current = false;
+    hintList.current?.querySelector<HTMLElement>("p:last-of-type")?.focus();
+  }, [hintCount]);
+  const revealHint = () => { if (hintCount >= 1) { setHintConfirm(true); return; } focusNewHint.current = true; onRevealHint(); };
+  const cancelHint = () => { setHintConfirm(false); hintButton.current?.focus(); };
   useEffect(() => {
     if (!estimateFocus) return;
     setTab("mission");
@@ -79,7 +94,7 @@ export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummar
             <span>Graded criteria and the traffic workload stay hidden until you clarify the brief. Ask enough questions in the Clarify stage to reveal them.</span>
           </div>
         ) : <>
-          {estimation.prompts.length > 0 && <EstimationPanel prompts={estimation.prompts} values={estimation.values} onChange={estimation.onChange} locked={estimation.locked} outcomes={estimation.outcomes} />}
+          {estimation.prompts.length > 0 && <EstimationPanel prompts={estimation.prompts} values={estimation.values} onChange={estimation.onChange} locked={estimation.locked} outcomes={estimation.outcomes} baseline={isBaselineLesson(lesson)} />}
 
           {lesson.objectives.length > 0 && <div className="mission-criteria">
             <div className="requirements-heading"><span>TO PASS</span><span>{passedCount}/{lesson.objectives.length}</span></div>
@@ -96,14 +111,21 @@ export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummar
             <div role="status">{status.text && <p className={`assessment-status ${status.warning ? "assessment-warning" : ""}`}>{status.text}</p>}</div>
           </>}
 
-          <div className="hint-box">
-            <button onClick={onRevealHint} disabled={hintCount >= lesson.hints.length}>
+          <div className="hint-box" ref={hintList}>
+            <button ref={hintButton} onClick={revealHint} disabled={hintCount >= lesson.hints.length}>
               <Lightbulb size={16} />
               <span>{hintCount ? "Reveal another hint" : "Need a nudge?"}</span>
               <span className="hint-count">{hintCount}/{lesson.hints.length}</span>
               <ChevronRight size={13} />
             </button>
-            {lesson.hints.slice(0, hintCount).map((hint, index) => <p key={hint}><span>{index + 1}.</span>{hint}</p>)}
+            {hintConfirm && <div className="hint-confirm" role="group" aria-label="Confirm hint" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); cancelHint(); } }}>
+              <span>Use a hint? ({hintCount + 1} of {lesson.hints.length}) Each hint after the first takes {HINT_PENALTY} points off your defense score.</span>
+              <div>
+                <button ref={hintConfirmButton} type="button" className="button small" onClick={() => { setHintConfirm(false); focusNewHint.current = true; onRevealHint(); }}>Use hint</button>
+                <button type="button" className="text-button" onClick={cancelHint}>Cancel</button>
+              </div>
+            </div>}
+            {lesson.hints.slice(0, hintCount).map((hint, index) => <p key={hint} tabIndex={-1}><span>{index + 1}.</span>{hint}</p>)}
           </div>
 
           {hasOptions && <div className="mission-options">

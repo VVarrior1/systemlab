@@ -61,3 +61,16 @@
 @media(max-width:760px){.metric-grid{row-gap:0}}
 .results-next{display:none}
 @media(max-width:760px){.results-next{display:block;padding:14px 13px 4px}}
+
+/* Round 3: after Check the seed result is always one line, with the full variance table behind it. */
+.seed-summary{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;margin:14px 18px 0;padding:9px 12px;border:1px solid var(--line);border-radius:6px;background:var(--surface);font-size:11px;color:var(--muted);line-height:1.5}
+.seed-summary>svg{color:var(--green);flex:none}
+.seed-summary>span{flex:1;min-width:0}
+.seed-summary strong{font-weight:600}
+.seed-summary-pass{color:var(--green-dark)}
+.seed-summary-fail{color:#a5803f}
+.seed-summary-sep{margin:0 6px;color:var(--line)}
+.seed-summary-toggle{font-size:10px;white-space:nowrap}
+.seed-summary-range{white-space:nowrap}
+.seed-summary+.seed-spread{margin:8px 18px 20px}
+@media(max-width:760px){.seed-summary{margin:12px 13px 0;align-items:flex-start}.seed-summary>svg{margin-top:3px}.seed-summary-toggle{flex-basis:100%;justify-content:flex-start;padding-left:21px}.seed-summary+.seed-spread{margin:8px 13px 16px}}

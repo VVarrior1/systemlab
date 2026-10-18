@@ -150,3 +150,9 @@
 .mission-bottom>.estimation-gate-note{font-size:11px;line-height:1.5;color:#6c7b76;margin:0 0 9px}
 .topbar-download{color:#8a9893}
 .tech-stage-collapsed-actions{align-items:center}
+
+/* Round 3: a busy button stays mounted (and focused) while Check runs. */
+.button[aria-disabled="true"]{cursor:progress;opacity:.85}
+/* Headings that receive focus when a step opens or closes: no ring for mouse users, a clear one for keyboard. */
+#tech-stage-heading:focus,#defense-heading:focus{outline:none}
+#tech-stage-heading:focus-visible,#defense-heading:focus-visible{outline:2px solid #69a48b;outline-offset:4px;border-radius:4px}

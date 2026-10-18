@@ -17,10 +17,10 @@ import { useEditor } from "@/lib/editor-store";
 import { Shell } from "./shell";
 import { Modal, Tip } from "./ui";
 import { ArchitectureCanvas } from "./architecture-canvas";
-import { DEFAULT_FOCUS_METRICS, Results, type AlternativeView } from "./results";
+import { DEFAULT_FOCUS_METRICS, Results, type AlternativeView, type SeedSpread } from "./results";
 import { MissionPanel } from "./mission-panel";
-import { DefenseStage, type DefenseOutcome, type InterviewContext } from "./defense-stage";
-import { TechStage, type TechCommit } from "./tech-stage";
+import { DEFENSE_HEADING_ID, DefenseStage, type DefenseOutcome, type InterviewContext } from "./defense-stage";
+import { TECH_HEADING_ID, TechStage, type TechCommit } from "./tech-stage";
 import { ClarificationStage } from "./clarification-stage";
 
 const sandboxKinds: NodeKind[] = ["server", "load-balancer", "database", "cache", "queue", "cdn", "rate-limiter"];
@@ -56,7 +56,6 @@ const failureKindLabels: Record<FailureEvent["kind"], string> = {
 
 /** Extra seeds Check runs beyond the three assessment seeds, to show min/median/max spread. */
 const VARIANCE_SEEDS = [4242, 9001];
-interface SeedSpread { p95: [number, number, number]; throughput: [number, number, number]; errorRate: [number, number, number] }
 
 function minMedianMax(values: number[]): [number, number, number] {
   const sorted = [...values].sort((a, b) => a - b);
@@ -65,8 +64,11 @@ function minMedianMax(values: number[]): [number, number, number] {
   return [sorted[0]!, mid, sorted[n - 1]!];
 }
 
-function seedSpreadFrom(results: SimulationResult[]): SeedSpread {
+function seedSpreadFrom(results: SimulationResult[], passedSeeds: number, assessedSeeds: number): SeedSpread {
   return {
+    passedSeeds,
+    assessedSeeds,
+    seedCount: results.length,
     p95: minMedianMax(results.map((r) => r.p95)),
     throughput: minMedianMax(results.map((r) => r.throughput)),
     errorRate: minMedianMax(results.map((r) => r.errorRate)),
@@ -274,6 +276,11 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
   const [techCommit, setTechCommit] = useState<TechCommit | null>(null);
   const [techSkipped, setTechSkipped] = useState(false);
   const [seedSpread, setSeedSpread] = useState<SeedSpread | null>(null);
+  /** True while Check runs its seeds: the header keeps the pressed button in place and shows progress on it. */
+  const [checking, setChecking] = useState(false);
+  /** An element id to focus after the next render, when an action removes the control that had focus. */
+  const [pendingFocus, setPendingFocus] = useState<string | null>(null);
+  const workloadToggle = useRef<HTMLButtonElement>(null);
   const taskRef = useRef(0);
   const workers = useRef(new Set<Worker>());
   const pendingDraft = useRef<{ key: string; architecture: Architecture; workload: Workload } | null>(null);
@@ -282,8 +289,14 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
   const cancelRun = useCallback(() => {
     taskRef.current++;
     for (const worker of workers.current) worker.terminate();
-    workers.current.clear(); setRunning(false); setRunLabel("Run simulation");
+    workers.current.clear(); setRunning(false); setChecking(false); setRunLabel("Run simulation");
   }, []);
+
+  useEffect(() => {
+    if (!pendingFocus) return;
+    document.getElementById(pendingFocus)?.focus();
+    setPendingFocus(null);
+  }, [pendingFocus]);
 
   const activeLesson = remixed?.lesson ?? lesson;
   const isWritten = lesson?.kind === "written";
@@ -406,7 +419,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
     const snapshot = structuredClone(architecture);
     let revisionSnapshot = revision;
     setRunning(true); setError("");
-    if (check) { setValidation(null); setAlternatives(null); }
+    if (check) { setValidation(null); setAlternatives(null); setChecking(true); }
     try {
       if (check && activeLesson && activeLesson.kind !== "written") {
         // A blank-canvas run is graded on the objectives alone: the mission's shape rules do not apply.
@@ -430,12 +443,12 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
         const inspected = results.find((r) => activeLesson.objectives.some((o) => !objectivePasses(r, o))) ?? results[0];
         setValidation({ revision: revisionSnapshot, passed, results });
         setResult(inspected); setResultWorkload({ ...activeLesson.workload, seed: inspected.seed }); setResultRevision(revisionSnapshot);
-        setSeedSpread(seedSpreadFrom(allResults));
+        setSeedSpread(seedSpreadFrom(allResults, results.filter((r) => activeLesson.objectives.every((o) => objectivePasses(r, o))).length, results.length));
         revealResults();
         if (activeLesson.estimation.length > 0) setEstimationOutcomes(scoreEstimations(activeLesson.estimation, estimationValues, results, snapshot));
         if (passed) setToast("All three workload checks passed. Defend the design to finish.");
         else setError("Some requirements are not met across the three test workloads. Inspect the results and try another change.");
-        setRunning(false); setRunLabel("Run simulation");
+        setRunning(false); setChecking(false); setRunLabel("Run simulation");
         await runAlternatives(task, snapshot, inspected, activeLesson, blankRun);
         return;
       }
@@ -445,7 +458,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
       setResult(output); setResultWorkload({ ...workload }); setResultRevision(revisionSnapshot);
       revealResults();
     } catch (caught) { if (task === taskRef.current) setError(caught instanceof Error ? caught.message : "Simulation failed. Please try again."); }
-    finally { if (task === taskRef.current) { setRunning(false); setRunLabel("Run simulation"); } }
+    finally { if (task === taskRef.current) { setRunning(false); setChecking(false); setRunLabel("Run simulation"); } }
   };
 
   const resetAssessment = () => {
@@ -625,6 +638,9 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
     metrics: nodeMetricSummaries(stale ? null : result, architecture),
   } : undefined;
 
+  /** Skipping removes the step (and the focused button with it): focus moves on to the defense. */
+  const skipTech = () => { setTechSkipped(true); setPendingFocus(DEFENSE_HEADING_ID); };
+
   const setFailures = (next: FailureEvent[]) => setWorkload({ failures: next });
   const patchFailure = (index: number, patch: Partial<FailureEvent>) => setFailures(failures.map((row, i) => (i === index ? { ...row, ...patch } : row)));
 
@@ -648,11 +664,12 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
         {wallClock.started ? <><Timer size={13} />{wallClock.overtime > 0 ? `+${formatDuration(wallClock.overtime)} over` : `${formatDuration(wallClock.remaining)} left`}</> : <><Clock3 size={13} />{lesson.minutes} min</>}
       </span>}
       {!lesson && <button className="button" onClick={() => setTemplateOpen(true)}><GitBranch size={15} />Templates<ChevronDown size={13} /></button>}
-      {!isWritten && <button className={`button ${runIsPrimary ? "primary" : ""} run-button`} onClick={() => run()} disabled={running || !ready || !revealed}>{running ? <LoaderCircle size={16} className="spin" /> : <Play size={15} fill="currentColor" />}{runLabel}</button>}
+      {!isWritten && <button className={`button ${runIsPrimary ? "primary" : ""} run-button`} onClick={() => run()} disabled={running || !ready || !revealed}>{running && !checking ? <LoaderCircle size={16} className="spin" /> : <Play size={15} fill="currentColor" />}{checking ? "Run simulation" : runLabel}</button>}
       {lesson && completed ? (nextLesson ? <Link className="button primary run-button" href={`/learn/${nextLesson.id}`}>Next lesson<ArrowRight size={15} /></Link> : <Link className="button primary run-button" href="/learn">Back to learning path<ArrowRight size={15} /></Link>)
         : lesson && valid && !isWritten ? <button className="button primary run-button" onClick={nextStep}>Continue to defense<ArrowRight size={15} /></button>
           : needsEstimates && !running ? <button className="button primary run-button" onClick={() => setEstimateFocus((count) => count + 1)}>Enter your estimates<ArrowRight size={15} /></button>
-            : checkPrimary && !running ? <button className="button primary run-button" onClick={() => run(true)} disabled={!ready || remixPreparing}><ShieldCheck size={15} />Check solution</button> : null}
+            : checking ? <button className="button primary run-button" aria-disabled="true" onClick={() => undefined}><LoaderCircle size={15} className="spin" />{runLabel}</button>
+              : checkPrimary && !running ? <button className="button primary run-button" onClick={() => run(true)} disabled={!ready || remixPreparing}><ShieldCheck size={15} />Check solution</button> : null}
     </div>
   </div>;
 
@@ -695,6 +712,14 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
     <option value="flash">Flash crowd</option>
   </select>;
 
+  /** Escape closes the Traffic & failures (or Configure) panel and hands focus back to its toggle. */
+  const closeWorkloadOnEscape = (event: React.KeyboardEvent) => {
+    if (event.key !== "Escape" || !workloadOpen) return;
+    event.stopPropagation();
+    setWorkloadOpen(false);
+    workloadToggle.current?.focus();
+  };
+
   const trafficControls = <>
     <div className="workload-bar">
       <div className="workload-main">
@@ -703,9 +728,9 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
         <div className="traffic-value"><input aria-label="Requests per second" type="number" min="1" max={LIMITS.requestRate} disabled={trafficDisabled} value={workload.requestRate} onChange={(e) => setWorkload({ requestRate: clamp(Number(e.target.value), 1, LIMITS.requestRate) })} /><span>req/s</span></div>
       </div>
       {patternInline && <div className="workload-pattern">{patternSelect}</div>}
-      <button className={`text-button workload-options ${workloadOpen ? "active" : ""}`} aria-expanded={workloadOpen} aria-controls="workload-settings" onClick={() => setWorkloadOpen(!workloadOpen)}>{patternInline ? "Configure" : "Traffic & failures"}<ChevronDown size={13} className={workloadOpen ? "flip" : ""} /></button>
+      <button ref={workloadToggle} className={`text-button workload-options ${workloadOpen ? "active" : ""}`} aria-expanded={workloadOpen} aria-controls="workload-settings" onClick={() => setWorkloadOpen(!workloadOpen)} onKeyDown={closeWorkloadOnEscape}>{patternInline ? "Configure" : "Traffic & failures"}<ChevronDown size={13} className={workloadOpen ? "flip" : ""} /></button>
     </div>
-    {workloadOpen && <div className="workload-settings" id="workload-settings">
+    {workloadOpen && <div className="workload-settings" id="workload-settings" onKeyDown={closeWorkloadOnEscape}>
       {!patternInline && <label className="field-label">Pattern{patternSelect}</label>}
       <label className="field-label">Read traffic <span>{Math.round(workload.readRatio * 100)}%</span><input aria-label="Read traffic percentage" type="range" min="0" max="100" disabled={trafficDisabled} value={Math.round(workload.readRatio * 100)} onChange={(e) => setWorkload({ readRatio: Number(e.target.value) / 100 })} /></label>
       <label className="field-label">Duration<select aria-label="Simulation duration" value={workload.duration} disabled={trafficDisabled} onChange={(e) => setWorkload({ duration: Number(e.target.value) })}><option value="15">15 seconds</option><option value="30">30 seconds</option><option value="60">60 seconds</option></select></label>
@@ -765,7 +790,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
             onUnpin={() => { setBaseline(null); setBaselineWorkload(null); }}
             stale={stale} running={running} alternatives={alternatives} alternativesLoading={alternativesLoading}
             seedSpread={seedSpread} focusMetrics={focusMetrics}
-            nextAction={running ? null : valid && lesson && !completed && !isWritten ? { label: "Continue to defense", onClick: nextStep } : needsEstimates ? { label: "Enter your estimates", onClick: () => setEstimateFocus((count) => count + 1) } : checkPrimary ? { label: "Check solution", onClick: () => run(true) } : null}
+            nextAction={checking ? { label: runLabel, onClick: () => undefined, busy: true } : running ? null : valid && lesson && !completed && !isWritten ? { label: "Continue to defense", onClick: nextStep } : needsEstimates ? { label: "Enter your estimates", onClick: () => setEstimateFocus((count) => count + 1) } : checkPrimary ? { label: "Check solution", onClick: () => run(true) } : null}
           />
         </div>
       </div>
@@ -776,12 +801,12 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
           workload={workload}
           required={techRequired}
           onCommit={setTechCommit}
-          onSkip={() => setTechSkipped(true)}
+          onSkip={skipTech}
         /> : <section className="tech-stage tech-stage-collapsed" aria-label="Optional technology step">
           <div><strong>Optional: name the technologies</strong><p>Pick a concrete technology for each component and sketch the data model. The defense below is already open.</p></div>
           <div className="tech-stage-collapsed-actions">
-            <button className="button" onClick={() => setTechOpen(true)}>Name the technologies<ArrowRight size={13} /></button>
-            <button className="text-button" onClick={() => setTechSkipped(true)}>Hide this step</button>
+            <button className="button" onClick={() => { setTechOpen(true); setPendingFocus(TECH_HEADING_ID); }}>Name the technologies<ArrowRight size={13} /></button>
+            <button className="text-button" onClick={skipTech}>Hide this step</button>
           </div>
         </section>)}
         {lesson && activeLesson && revealed && <DefenseStage

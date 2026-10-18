@@ -30,4 +30,8 @@
 .system-node.node-unmeasured{min-height:0}
 .node-kind{font-size:8px}
 .node-spec{font-size:9px}
+.system-node .node-spec{justify-content:flex-start;flex-wrap:wrap;column-gap:5px;row-gap:2px}
+/* The second spec (service time, replicas, protocol) stays on the card, one step quieter than the first. */
+.system-node .node-spec-aside{display:inline-flex;gap:5px;color:#8797a0}
+.system-node .node-spec-aside>span{color:#c3ccd1}
 .node-utilization>span{font-size:8px}

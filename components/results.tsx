@@ -1,14 +1,15 @@
 "use client";
 import { useState } from "react";
 import { Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Activity, ArrowDownRight, ArrowRight, ArrowUpRight, Ban, Check, ChevronDown, CircleAlert, Clock3, CopyX, FileX, GitCompareArrows, History, Hourglass, Info, Merge, Pin, RefreshCw, Repeat, ScanLine, ShieldCheck, Skull, SplitSquareHorizontal, Timer, Unplug, X } from "lucide-react";
+import { Activity, LoaderCircle, ArrowDownRight, ArrowRight, ArrowUpRight, Ban, Check, ChevronDown, CircleAlert, Clock3, CopyX, FileX, GitCompareArrows, History, Hourglass, Info, Merge, Pin, RefreshCw, Repeat, ScanLine, ShieldCheck, Skull, SplitSquareHorizontal, Timer, Unplug, X } from "lucide-react";
 import type { SimulationResult, TraceStatus, Workload } from "@/lib/types";
 import { tabPanelProps, tabProps } from "./ui";
 
 /** Metric tiles shown when no lesson narrows the view (the sandbox). */
 export const DEFAULT_FOCUS_METRICS = ["p95", "throughput", "errorRate", "cost"];
 
-export interface SeedSpread { p95: [number, number, number]; throughput: [number, number, number]; errorRate: [number, number, number] }
+/** Check's variance view: min/median/max over every seed it ran, and how many assessment seeds passed. */
+export interface SeedSpread { p95: [number, number, number]; throughput: [number, number, number]; errorRate: [number, number, number]; passedSeeds: number; assessedSeeds: number; seedCount: number }
 
 export interface AlternativeView {
   id: string;
@@ -62,12 +63,13 @@ function fmt(value: number, digits: number) {
   return Number(value.toFixed(digits)).toLocaleString();
 }
 
-export function Results({ result, baseline, workload, baselineWorkload, onPin, onUnpin, stale, running, alternatives, alternativesLoading, seedSpread, focusMetrics = DEFAULT_FOCUS_METRICS, nextAction }: { result: SimulationResult | null; baseline: SimulationResult | null; workload: Workload | null; baselineWorkload: Workload | null; onPin: () => void; onUnpin: () => void; stale: boolean; running: boolean; alternatives?: AlternativeView[] | null; alternativesLoading?: boolean; seedSpread?: SeedSpread | null; /** Metric keys shown up front; every other tile sits behind "All metrics". */ focusMetrics?: string[]; /** Phones only: the lesson's next step, repeated under the tiles because the header is scrolled away. */ nextAction?: { label: string; onClick: () => void } | null }) {
+export function Results({ result, baseline, workload, baselineWorkload, onPin, onUnpin, stale, running, alternatives, alternativesLoading, seedSpread, focusMetrics = DEFAULT_FOCUS_METRICS, nextAction }: { result: SimulationResult | null; baseline: SimulationResult | null; workload: Workload | null; baselineWorkload: Workload | null; onPin: () => void; onUnpin: () => void; stale: boolean; running: boolean; alternatives?: AlternativeView[] | null; alternativesLoading?: boolean; seedSpread?: SeedSpread | null; /** Metric keys shown up front; every other tile sits behind "All metrics". */ focusMetrics?: string[]; /** Phones only: the lesson's next step, repeated under the tiles because the header is scrolled away. */ nextAction?: { label: string; onClick: () => void; /** Check is running: keep the button (and its focus) in place, showing progress. */ busy?: boolean } | null }) {
   const [tab, setTab] = useState("overview");
   const [traceId, setTraceId] = useState(0);
   const [chartMetric, setChartMetric] = useState("p95");
   const [allMetrics, setAllMetrics] = useState(false);
   const [moreTabs, setMoreTabs] = useState(false);
+  const [varianceOpen, setVarianceOpen] = useState(false);
   const differentWorkload = !!baseline && !!workload && !!baselineWorkload && (Object.keys(workload) as (keyof Workload)[]).some((key) => workload[key] !== baselineWorkload[key]);
   const chartLabels: Record<string, string> = { p95: "Response latency", throughput: "Throughput", chartErrorRate: "Error rate", queueDepth: "Waiting requests", rejected: "Rejected requests" };
   const chartUnit = chartMetric === "p95" ? "ms" : chartMetric === "throughput" ? "req/s" : chartMetric === "chartErrorRate" ? "%" : chartMetric === "rejected" ? "req" : "";
@@ -93,6 +95,9 @@ export function Results({ result, baseline, workload, baselineWorkload, onPin, o
   const hiddenCount = metrics.length - focused.length;
   // Hidden tiles that measured a problem (non-zero shed, stale reads, lost writes...) get flagged on the toggle.
   const hiddenAlerts = metrics.filter((metric) => !focusMetrics.includes(metric.key) && "dim" in metric && metric.value !== null && metric.value > 0).length;
+  // After Check the one-line seed summary always shows; the full table follows All metrics, or opens on its own.
+  const varianceForced = allMetrics || focused.length === 0;
+  const varianceShown = varianceForced || varianceOpen;
   const primaryTabs = [{ id: "overview", name: "Overview" }, { id: "insights", name: "Insights" }];
   const advancedTabs = [{ id: "traces", name: "Request traces" }, { id: "alternatives", name: "Alternatives" }, { id: "model", name: "Model" }];
   // Advanced views wait behind "More" until a run exists; after that they sit inline.
@@ -104,9 +109,10 @@ export function Results({ result, baseline, workload, baselineWorkload, onPin, o
     {baseline && <div className="baseline-banner"><GitCompareArrows size={14} /><span>Comparing with baseline: {baseline.completed ? Math.round(baseline.p95) : "--"} ms p95 / {Math.round(baseline.throughput)} req/s</span><button className="icon-button" aria-label="Remove baseline" onClick={onUnpin}><X size={14} /></button></div>}
     {differentWorkload && <div className="results-stale" role="status">Different workload or seed: these deltas do not isolate the effect of architecture changes.</div>}
     {tab === "overview" && <div {...tabPanelProps("results", "overview")}><div className="metric-grid" id="results-metric-grid">{shownMetrics.map((metric) => { const diff = metric.value !== null && metric.previous !== undefined ? metric.value - metric.previous : null; const good = diff !== null && (metric.lower ? diff < 0 : diff > 0); return <div className={`metric${metric.dim ? " dim" : ""}`} key={metric.label}><span className="metric-label">{metric.label}</span><div><strong>{metric.value === null ? "--" : fmt(metric.value, metric.unit === "%" || metric.unit === "credits" ? 1 : 0)}</strong><span className="metric-unit">{metric.unit}</span>{diff !== null && Math.abs(diff) > 0.05 && <span className={`metric-delta ${differentWorkload ? "" : good ? "good" : "bad"}`} title={`${diff > 0 ? "+" : ""}${diff.toFixed(1)} ${metric.unit === "%" ? "percentage points" : metric.unit} versus baseline`}>{diff < 0 ? <ArrowDownRight size={12} /> : <ArrowUpRight size={12} />}{Math.abs(diff).toFixed(1)}{metric.unit === "%" ? " pp" : ""}</span>}</div>{"sub" in metric && metric.sub && <span className="metric-sub">{metric.sub}</span>}{"breakdown" in metric && metric.breakdown && metric.breakdown.length > 0 && <details className="cost-breakdown"><summary>Cost breakdown</summary><ul>{metric.breakdown.map((line) => <li key={line.nodeId}><span>{line.label}</span><span className="mono">{fmt(line.cost, 1)}{typeof line.usage === "number" && line.usage > 0 && <span className="cost-usage"> ({fmt(line.usage, 1)} usage)</span>}</span></li>)}{"extraCostRows" in metric && metric.extraCostRows?.map((row) => <li key={row.label} className="cost-row-usage"><span>{row.label}</span><span className="mono">{fmt(row.cost, 1)}</span></li>)}</ul></details>}</div>; })}</div>
-      {result && nextAction && <div className="results-next"><button className="button primary full-width" onClick={nextAction.onClick}>{nextAction.label}<ArrowRight size={15} /></button></div>}
+      {result && nextAction && <div className="results-next"><button className="button primary full-width" aria-disabled={nextAction.busy || undefined} onClick={nextAction.onClick}>{nextAction.busy && <LoaderCircle size={15} className="spin" />}{nextAction.label}{!nextAction.busy && <ArrowRight size={15} />}</button></div>}
       {result && focused.length > 0 && hiddenCount > 0 && <div className="metrics-toggle-row"><button className="text-button metrics-toggle" aria-expanded={allMetrics} aria-controls="results-metric-grid" onClick={() => setAllMetrics(!allMetrics)}>{allMetrics ? "Show only this lesson's metrics" : `All metrics (${metrics.length})`}{!allMetrics && hiddenAlerts > 0 && <span className="metrics-alert">{hiddenAlerts} non-zero</span>}<ChevronDown size={12} className={allMetrics ? "flip" : ""} /></button></div>}
-      {seedSpread && (allMetrics || focused.length === 0) && <div className="seed-spread" role="note"><div className="seed-spread-heading"><SplitSquareHorizontal size={13} /><span>Variance across 5 seeds</span></div><div className="seed-spread-grid">
+      {seedSpread && <div className="seed-summary" role="note"><SplitSquareHorizontal size={13} /><span><strong className={seedSpread.passedSeeds === seedSpread.assessedSeeds ? "seed-summary-pass" : "seed-summary-fail"}>Passed on {seedSpread.passedSeeds} of {seedSpread.assessedSeeds} assessment seeds</strong><span className="seed-summary-sep" aria-hidden="true">·</span>p95 spread <span className="seed-summary-range">{fmt(seedSpread.p95[0], 0)}–{fmt(seedSpread.p95[2], 0)} ms</span> across {seedSpread.seedCount} seeds</span>{!varianceForced && <button className="text-button seed-summary-toggle" aria-expanded={varianceShown} aria-controls="seed-spread" onClick={() => setVarianceOpen(!varianceOpen)}>{varianceShown ? "Hide variance" : "Variance table"}<ChevronDown size={12} className={varianceShown ? "flip" : ""} /></button>}</div>}
+      {seedSpread && varianceShown && <div className="seed-spread" id="seed-spread" role="note"><div className="seed-spread-heading"><SplitSquareHorizontal size={13} /><span>Variance across {seedSpread.seedCount} seeds</span></div><div className="seed-spread-grid">
         <div><span className="seed-spread-label">P95</span><span className="seed-spread-values"><span title="Minimum">{fmt(seedSpread.p95[0], 0)}</span><span title="Median">{fmt(seedSpread.p95[1], 0)}</span><span title="Maximum">{fmt(seedSpread.p95[2], 0)}</span></span><span className="seed-spread-caption">min / median / max, ms</span></div>
         <div><span className="seed-spread-label">Throughput</span><span className="seed-spread-values"><span title="Minimum">{fmt(seedSpread.throughput[0], 0)}</span><span title="Median">{fmt(seedSpread.throughput[1], 0)}</span><span title="Maximum">{fmt(seedSpread.throughput[2], 0)}</span></span><span className="seed-spread-caption">min / median / max, req/s</span></div>
         <div><span className="seed-spread-label">Error rate</span><span className="seed-spread-values"><span title="Minimum">{fmt(seedSpread.errorRate[0] * 100, 1)}</span><span title="Median">{fmt(seedSpread.errorRate[1] * 100, 1)}</span><span title="Maximum">{fmt(seedSpread.errorRate[2] * 100, 1)}</span></span><span className="seed-spread-caption">min / median / max, %</span></div>

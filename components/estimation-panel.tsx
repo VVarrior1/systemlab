@@ -2,7 +2,7 @@
 import { Gauge } from "lucide-react";
 import type { EstimationOutcome, EstimationValues } from "@/lib/estimation";
 import { meanEstimationScore } from "@/lib/estimation";
-import type { EstimationId, EstimationPrompt } from "@/lib/types";
+import type { EstimationId, EstimationPrompt, Lesson } from "@/lib/types";
 
 function calibration(score: 0 | 0.5 | 1): string {
   return score === 1 ? "calibrated" : score === 0.5 ? "close" : "off";
@@ -19,7 +19,22 @@ function deltaPercent(outcome: EstimationOutcome): string {
   return `${sign}${delta.toFixed(0)}%`;
 }
 
-export function EstimationPanel({ prompts, values, onChange, locked, outcomes }: {
+/**
+ * A baseline lesson asks the learner to predict the starter design as it stands: its reference
+ * design is the starter architecture itself, so there is no change to predict "after".
+ */
+export function isBaselineLesson(lesson: Pick<Lesson, "architecture" | "reference">): boolean {
+  return JSON.stringify(lesson.architecture) === JSON.stringify(lesson.reference);
+}
+
+/** The prompt's label, without the "after your change" clause when there is nothing to change. */
+export function estimateLabel(prompt: EstimationPrompt, baseline: boolean): string {
+  return baseline ? prompt.label.replace(/\s+after your change$/i, "") : prompt.label;
+}
+
+export function EstimationPanel({ prompts, values, onChange, locked, outcomes, baseline = false }: {
+  /** The lesson is a baseline (see isBaselineLesson): labels drop "after your change". */
+  baseline?: boolean;
   prompts: EstimationPrompt[];
   values: EstimationValues;
   onChange: (id: EstimationId, value: number | undefined) => void;
@@ -34,7 +49,7 @@ export function EstimationPanel({ prompts, values, onChange, locked, outcomes }:
       {prompts.map((prompt) => {
         const outcome = outcomeFor(prompt.id);
         return <li key={prompt.id} className={outcome ? `graded ${calibration(outcome.score)}` : ""}>
-          <label className="field-label" htmlFor={`estimate-${prompt.id}`}>{prompt.label}</label>
+          <label className="field-label" htmlFor={`estimate-${prompt.id}`}>{estimateLabel(prompt, baseline)}</label>
           <div className="estimation-input">
             <input
               id={`estimate-${prompt.id}`}

@@ -77,7 +77,7 @@ const SystemFlowNode = memo(function SystemFlowNode({ data }: NodeProps<FlowNode
     {regionTag && <span className="node-region-tag" title={`Region: ${regionTag}`}>{regionTag}</span>}
     <div className="node-topline"><span className="node-kind">{node.role === "worker" ? "BACKGROUND WORKER" : kindLabels[node.kind]}</span><span className={`node-status ${offline ? "offline" : hot ? "busy" : ""}`} /></div>
     <div className="node-identity"><span className="node-icon"><Icon size={20} strokeWidth={1.65} /></span><strong>{node.label}</strong></div>
-    <div className="node-spec"><span>{left}</span></div>
+    <div className="node-spec"><span>{left}</span><span className="node-spec-aside"><span aria-hidden="true">·</span>{right}</span></div>
     {badges.length > 0 && <div className="node-badges">{badges.map((b) => <span className="node-badge" key={b.label}><b.icon size={9} strokeWidth={2} />{b.label}</span>)}</div>}
     {node.kind === "database" && metric?.shards && metric.shards.length > 0 && <div className="node-shards" title="Per-shard utilization">{metric.shards.map((u, i) => <span key={i} className={u > 0.85 ? "hot" : ""} style={{ height: `${Math.max(10, Math.min(100, u * 100))}%` }} />)}</div>}
     {node.kind !== "traffic" && measured && <div className="node-utilization"><div className="node-utilization-track"><span className={hot ? "hot" : ""} style={{ width: `${Math.min(100, utilization * 100)}%` }} /></div><span>{offline ? "Unavailable" : `${Math.round(utilization * 100)}% ${node.replicas > 1 ? "busiest replica" : "busy"}`}</span></div>}

@@ -10,7 +10,8 @@ export interface PenaltyInput {
 export interface Deduction { reason: string; points: number }
 export interface PenaltyResult { total: number; deductions: Deduction[] }
 
-const HINT_PENALTY = 5;
+/** Points each hint beyond the first costs at the defense (exported for the hint confirmation copy). */
+export const HINT_PENALTY = 5;
 const REFLECTION_PENALTY = 5;
 const OVERTIME_POINTS_PER_15S = 1;
 const OVERTIME_CAP = 10;
