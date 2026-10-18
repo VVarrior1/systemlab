@@ -987,7 +987,7 @@ export function MockInterview() {
 
   return <Shell currentLessonId={lesson.id}>
     <header className="topbar">
-      <div className="breadcrumb"><Link href="/learn">Learning path</Link><ChevronRight size={13} /><span>Mock interview</span></div>
+      <div className="breadcrumb"><span>Practice</span><ChevronRight size={13} /><span>Mock interview</span></div>
       <div className="topbar-right">
         <span className="save-status"><Clock3 size={13} />{minutes} min session</span>
       </div>

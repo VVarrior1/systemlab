@@ -6,10 +6,11 @@ import type { EstimationId, EstimationPrompt } from "@/lib/types";
 import type { EstimationOutcome, EstimationValues } from "@/lib/estimation";
 import { estimationComplete } from "@/lib/estimation";
 import { EstimationPanel } from "./estimation-panel";
+import { tabPanelProps, tabProps } from "./ui";
 
 type Tab = "mission" | "learn" | "deep-dive";
 
-export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummary, hintCount, onRevealHint, estimation, check, remix, blankStart, attempts, hidden, onOpenReading, defaultTab }: {
+export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummary, hintCount, onRevealHint, estimation, check, remix, blankStart, attempts, hidden, onOpenReading, defaultTab, estimateFocus = 0 }: {
   lesson: Lesson;
   objectiveChecks: boolean[];
   status: { text: string; warning: boolean };
@@ -34,10 +35,24 @@ export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummar
   onOpenReading?: () => void;
   /** Written lessons open on Learn, since the mission tab carries no objectives. */
   defaultTab?: Tab;
+  /** Each increment opens the Mission tab and focuses the first empty estimate. */
+  estimateFocus?: number;
 }) {
   const [tab, setTab] = useState<Tab>(defaultTab ?? "mission");
   const [gradingOpen, setGradingOpen] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
+  useEffect(() => {
+    if (!estimateFocus) return;
+    setTab("mission");
+    const timer = setTimeout(() => {
+      const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('.mission-panel input[id^="estimate-"]'));
+      const target = inputs.find((input) => input.value.trim() === "") ?? inputs[0];
+      if (!target) return;
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      target.focus({ preventScroll: true });
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [estimateFocus]);
   const passedCount = objectiveChecks.filter(Boolean).length;
   const estimationBlocked = estimation.required && !estimationComplete(estimation.prompts, estimation.values);
   const blankActive = !!blankStart?.active;
@@ -46,13 +61,14 @@ export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummar
   useEffect(() => { if (blankActive || remixActive) setOptionsOpen(true); }, [blankActive, remixActive]);
   const hasOptions = !!blankStart || !!remix || attempts > 0;
   const tabs: { id: Tab; name: string }[] = [{ id: "mission", name: "Mission" }, { id: "learn", name: "Learn" }, { id: "deep-dive", name: "Deep dive" }];
+  const tabIds = tabs.map((item) => item.id);
 
   return <aside className="mission-panel">
     <div className="mission-tabs" role="tablist" aria-label="Lesson">
-      {tabs.map((item) => <button key={item.id} role="tab" aria-selected={tab === item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>{item.name}</button>)}
+      {tabs.map((item) => <button key={item.id} className={tab === item.id ? "active" : ""} {...tabProps("mission", tabIds, item.id, tab, setTab)}>{item.name}</button>)}
     </div>
 
-    {tab === "mission" && <>
+    {tab === "mission" && <div className="mission-tabpanel" {...tabPanelProps("mission", "mission")}>
       <div className="mission-body">
         <h2>The scenario</h2>
         <p className="mission-brief">{lesson.brief}</p>
@@ -128,16 +144,16 @@ export function MissionPanel({ lesson, objectiveChecks, status, assessmentSummar
           {check.label}
         </button>
       </div>}
-    </>}
+    </div>}
 
-    {tab === "learn" && <div className="mission-body learn-content" role="tabpanel">
+    {tab === "learn" && <div className="mission-body learn-content" {...tabPanelProps("mission", "learn")}>
       <span className="eyebrow">THE IDEA BEHIND THE SYSTEM</span>
       <h2>{lesson.concept}</h2>
       {lesson.learning.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}
       {onOpenReading && <button className="text-button" onClick={onOpenReading}>Open reading view<ArrowRight size={13} /></button>}
     </div>}
 
-    {tab === "deep-dive" && <div className="mission-body deep-dive-content" role="tabpanel">
+    {tab === "deep-dive" && <div className="mission-body deep-dive-content" {...tabPanelProps("mission", "deep-dive")}>
       <span className="eyebrow">GO DEEPER</span>
       {lesson.readings.length === 0 ? <p className="panel-empty">No readings for this lesson yet.</p> : <ul className="reading-cards">
         {lesson.readings.map((reading) => <li className="reading-card" key={reading.url}>

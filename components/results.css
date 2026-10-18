@@ -57,3 +57,7 @@
 .metrics-toggle{font-size:10px}
 .metrics-alert{margin-left:2px;font:8px var(--mono);color:#a5803f;background:#fbf4e4;border-radius:3px;padding:1px 5px}
 @media(max-width:760px){.results-tabs-row{gap:14px}.metrics-toggle-row{padding:12px 13px 6px}}
+.metric-grid{row-gap:22px}
+@media(max-width:760px){.metric-grid{row-gap:0}}
+.results-next{display:none}
+@media(max-width:760px){.results-next{display:block;padding:14px 13px 4px}}

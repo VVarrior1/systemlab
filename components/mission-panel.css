@@ -80,3 +80,5 @@
 .mission-options .disclosure-button{margin-top:8px}
 .mission-options-body .blank-start{margin-top:10px;padding-top:0;border-top:0}
 .mission-options-body .remix-controls{margin-top:14px}
+.mission-tabpanel{display:flex;flex-direction:column;flex:1}
+[role="tabpanel"]:focus-visible{outline:2px solid var(--green);outline-offset:-2px}

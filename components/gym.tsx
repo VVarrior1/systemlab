@@ -121,7 +121,7 @@ export function Gym() {
   return (
     <Shell>
       <header className="topbar">
-        <div className="breadcrumb"><span>Personal workspace</span><ArrowRight size={12} /><span>Estimation gym</span></div>
+        <div className="breadcrumb"><span>Practice</span><ArrowRight size={12} /><span>Estimation gym</span></div>
       </header>
       <div className="library-page gym-page">
         <div className="gym-heading">

@@ -137,7 +137,7 @@
 .workspace-footer{justify-content:flex-end}
 .modal-actions .modal-export{margin-right:auto;font-size:11px}
 .lesson-next-step{scroll-margin-top:16px}
-.tech-stage.tech-stage-collapsed{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.tech-stage.tech-stage-collapsed{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
 .tech-stage-collapsed strong{display:block;font-size:13px;font-weight:600;color:#3e5148}
 .tech-stage-collapsed p{margin:4px 0 0;font-size:11px;color:#7d8a84;max-width:560px}
 .tech-stage-collapsed-actions{display:flex;gap:8px;flex-wrap:wrap}
@@ -148,3 +148,5 @@
 }
 .main-nav{margin-top:26px}
 .mission-bottom>.estimation-gate-note{font-size:11px;line-height:1.5;color:#6c7b76;margin:0 0 9px}
+.topbar-download{color:#8a9893}
+.tech-stage-collapsed-actions{align-items:center}

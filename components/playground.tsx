@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, Clock3, Download, Eraser, GitBranch, LoaderCircle, Play, Plus, RotateCcw, Save, Shuffle, Timer, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, Clock3, Download, Eraser, GitBranch, LoaderCircle, Play, Plus, RotateCcw, Save, ShieldCheck, Shuffle, Timer, Trash2, X } from "lucide-react";
 import type { Architecture, EstimationId, FailureEvent, Lesson, LessonKind, NodeKind, ObjectiveMetric, ProgressRecord, SimulationResult, SystemNode, Workload } from "@/lib/types";
 import { lessons } from "@/lib/curriculum";
 import { createSystemNode, defaultWorkload, sandboxArchitecture, templates } from "@/lib/templates";
@@ -15,7 +15,7 @@ import { deriveRemixObjectives, remixLesson } from "@/lib/remix";
 import { LIMITS } from "@/lib/simulation/validate";
 import { useEditor } from "@/lib/editor-store";
 import { Shell } from "./shell";
-import { Modal } from "./ui";
+import { Modal, Tip } from "./ui";
 import { ArchitectureCanvas } from "./architecture-canvas";
 import { DEFAULT_FOCUS_METRICS, Results, type AlternativeView } from "./results";
 import { MissionPanel } from "./mission-panel";
@@ -246,6 +246,8 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
   const [savedFlash, setSavedFlash] = useState(false);
   const firstSave = useRef(true);
   const [techOpen, setTechOpen] = useState(false);
+  /** Bumped by the header's "Enter your estimates" button; the mission panel focuses the first empty estimate. */
+  const [estimateFocus, setEstimateFocus] = useState(0);
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState(lesson?.title ?? "Untitled architecture");
   const [designId, setDesignId] = useState<string | null>(null);
@@ -386,6 +388,17 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
     setAlternativesLoading(false);
   }, [simulate]);
 
+  /** On a phone the results sit below the mission and the canvas, so a finished run scrolls them into view. */
+  const revealResults = () => {
+    if (!window.matchMedia("(max-width: 760px)").matches) return;
+    requestAnimationFrame(() => {
+      const target = document.querySelector<HTMLElement>(".results-section");
+      if (!target) return;
+      const top = target.getBoundingClientRect().top;
+      if (top > window.innerHeight * 0.6 || top < 0) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
+
   const run = async (check = false) => {
     if (running || !ready || !revealed) return;
     startClock();
@@ -418,6 +431,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
         setValidation({ revision: revisionSnapshot, passed, results });
         setResult(inspected); setResultWorkload({ ...activeLesson.workload, seed: inspected.seed }); setResultRevision(revisionSnapshot);
         setSeedSpread(seedSpreadFrom(allResults));
+        revealResults();
         if (activeLesson.estimation.length > 0) setEstimationOutcomes(scoreEstimations(activeLesson.estimation, estimationValues, results, snapshot));
         if (passed) setToast("All three workload checks passed. Defend the design to finish.");
         else setError("Some requirements are not met across the three test workloads. Inspect the results and try another change.");
@@ -429,6 +443,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
       const output = await simulate(snapshot, { ...workload });
       if (task !== taskRef.current) return;
       setResult(output); setResultWorkload({ ...workload }); setResultRevision(revisionSnapshot);
+      revealResults();
     } catch (caught) { if (task === taskRef.current) setError(caught instanceof Error ? caught.message : "Simulation failed. Please try again."); }
     finally { if (task === taskRef.current) { setRunning(false); setRunLabel("Run simulation"); } }
   };
@@ -577,7 +592,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
   const statusText = missionIssue
     ?? (stale ? "Architecture or traffic changed. Recheck required."
       : validation?.revision === revision ? (valid ? "All three assessment runs passed." : "Assessment incomplete: some targets failed.")
-        : result ? "That was a practice run. Press Check solution to grade it." : "");
+        : result ? (estimationBlocked ? "That was a practice run. Enter your estimates, then press Check solution to grade it." : "That was a practice run. Press Check solution to grade it.") : "");
   const trafficDisabled = !ready || (!!lesson && !revealed);
   /** Steady lessons keep the traffic-pattern picker inside Configure; the sandbox and pattern lessons show it inline. */
   const patternInline = !lesson || (activeLesson?.workload.pattern ?? "steady") !== "steady" || workload.pattern !== "steady";
@@ -616,6 +631,9 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
   // One primary action at a time: Run, then Check once a run exists, then the defense, then the next lesson.
   const canCheck = !!lesson && !isWritten && revealed;
   const checkIsNext = canCheck && !!result && !valid && !completed;
+  // After a practice run the next step is the estimates (when they are still empty), then Check.
+  const needsEstimates = checkIsNext && estimationBlocked;
+  const checkPrimary = checkIsNext && !estimationBlocked;
   const runIsPrimary = !lesson || (!checkIsNext && !valid && !completed);
   const nextStep = () => { const target = document.getElementById("lesson-next-step"); target?.scrollIntoView({ behavior: "smooth", block: "start" }); };
   const budgetMinutes = lesson ? Math.round(WALL_CLOCK_BUDGET[lesson.kind] / 60) : 0;
@@ -632,7 +650,9 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
       {!lesson && <button className="button" onClick={() => setTemplateOpen(true)}><GitBranch size={15} />Templates<ChevronDown size={13} /></button>}
       {!isWritten && <button className={`button ${runIsPrimary ? "primary" : ""} run-button`} onClick={() => run()} disabled={running || !ready || !revealed}>{running ? <LoaderCircle size={16} className="spin" /> : <Play size={15} fill="currentColor" />}{runLabel}</button>}
       {lesson && completed ? (nextLesson ? <Link className="button primary run-button" href={`/learn/${nextLesson.id}`}>Next lesson<ArrowRight size={15} /></Link> : <Link className="button primary run-button" href="/learn">Back to learning path<ArrowRight size={15} /></Link>)
-        : lesson && valid && !isWritten ? <button className="button primary run-button" onClick={nextStep}>Continue to defense<ArrowRight size={15} /></button> : null}
+        : lesson && valid && !isWritten ? <button className="button primary run-button" onClick={nextStep}>Continue to defense<ArrowRight size={15} /></button>
+          : needsEstimates && !running ? <button className="button primary run-button" onClick={() => setEstimateFocus((count) => count + 1)}>Enter your estimates<ArrowRight size={15} /></button>
+            : checkPrimary && !running ? <button className="button primary run-button" onClick={() => run(true)} disabled={!ready || remixPreparing}><ShieldCheck size={15} />Check solution</button> : null}
     </div>
   </div>;
 
@@ -653,7 +673,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
       outcomes: estimationOutcomes,
       required: estimationRequired,
     }}
-    check={isWritten ? null : { label: valid ? "Requirements passed" : "Check solution", disabled: running || !ready || remixPreparing || estimationBlocked, passed: valid, running, onClick: () => run(true), emphasis: checkIsNext }}
+    check={isWritten ? null : { label: valid ? "Requirements passed" : "Check solution", disabled: running || !ready || remixPreparing || estimationBlocked, passed: valid, running, onClick: () => run(true), emphasis: checkPrimary }}
     remix={lesson.remixable && !isWritten ? { active: !!remixed, factor: remixed?.factor, preparing: remixPreparing, onRemix: startRemix, onReset: clearRemix } : null}
     blankStart={lesson.kind === "sim" ? {
       active: blankCanvas,
@@ -665,6 +685,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
     hidden={!revealed}
     defaultTab={isWritten ? "learn" : undefined}
     onOpenReading={() => setConceptOpen(true)}
+    estimateFocus={estimateFocus}
   /> : null;
 
   const patternSelect = <select aria-label="Traffic pattern" value={workload.pattern} disabled={trafficDisabled} onChange={(e) => setWorkload({ pattern: e.target.value as Workload["pattern"] })}>
@@ -682,7 +703,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
         <div className="traffic-value"><input aria-label="Requests per second" type="number" min="1" max={LIMITS.requestRate} disabled={trafficDisabled} value={workload.requestRate} onChange={(e) => setWorkload({ requestRate: clamp(Number(e.target.value), 1, LIMITS.requestRate) })} /><span>req/s</span></div>
       </div>
       {patternInline && <div className="workload-pattern">{patternSelect}</div>}
-      <button className={`text-button workload-options ${workloadOpen ? "active" : ""}`} aria-expanded={workloadOpen} aria-controls="workload-settings" onClick={() => setWorkloadOpen(!workloadOpen)}>{patternInline ? "Configure" : "Traffic settings"}<ChevronDown size={13} className={workloadOpen ? "flip" : ""} /></button>
+      <button className={`text-button workload-options ${workloadOpen ? "active" : ""}`} aria-expanded={workloadOpen} aria-controls="workload-settings" onClick={() => setWorkloadOpen(!workloadOpen)}>{patternInline ? "Configure" : "Traffic & failures"}<ChevronDown size={13} className={workloadOpen ? "flip" : ""} /></button>
     </div>
     {workloadOpen && <div className="workload-settings" id="workload-settings">
       {!patternInline && <label className="field-label">Pattern{patternSelect}</label>}
@@ -714,9 +735,10 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
 
   return <Shell currentLessonId={lesson?.id}>
     <header className="topbar">
-      <div className="breadcrumb"><Link href={lesson ? "/learn" : "/sandbox"}>{lesson ? "Learning path" : "Workspace"}</Link><ChevronRight size={13} /><span>{lesson?.chapter ?? "Sandbox"}</span></div>
+      <div className="breadcrumb">{lesson ? <Link href="/learn">Learning path</Link> : <span>Practice</span>}<ChevronRight size={13} /><span>{lesson?.chapter ?? "Sandbox"}</span></div>
       <div className="topbar-right">
         <span className="save-status" role="status">{savedFlash && saved ? <><CheckCheck size={14} />Saved</> : null}</span>
+        <Tip label="Download as JSON"><button className="icon-button topbar-download" aria-label="Download as JSON" onClick={exportDesign} disabled={!ready}><Download size={16} /></button></Tip>
         <button className="button small quiet" onClick={() => setSaveOpen(true)} disabled={!ready}><Save size={14} />Save design</button>
       </div>
     </header>
@@ -743,6 +765,7 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
             onUnpin={() => { setBaseline(null); setBaselineWorkload(null); }}
             stale={stale} running={running} alternatives={alternatives} alternativesLoading={alternativesLoading}
             seedSpread={seedSpread} focusMetrics={focusMetrics}
+            nextAction={running ? null : valid && lesson && !completed && !isWritten ? { label: "Continue to defense", onClick: nextStep } : needsEstimates ? { label: "Enter your estimates", onClick: () => setEstimateFocus((count) => count + 1) } : checkPrimary ? { label: "Check solution", onClick: () => run(true) } : null}
           />
         </div>
       </div>
@@ -755,17 +778,17 @@ export function Playground({ lesson }: { lesson?: Lesson }) {
           onCommit={setTechCommit}
           onSkip={() => setTechSkipped(true)}
         /> : <section className="tech-stage tech-stage-collapsed" aria-label="Optional technology step">
-          <div><strong>Optional: name the technologies</strong><p>Pick a concrete technology for each component and sketch the data model before you defend the design.</p></div>
+          <div><strong>Optional: name the technologies</strong><p>Pick a concrete technology for each component and sketch the data model. The defense below is already open.</p></div>
           <div className="tech-stage-collapsed-actions">
-            <button className="button" aria-expanded={false} onClick={() => setTechOpen(true)}>Open this step<ChevronDown size={13} /></button>
-            <button className="button primary" onClick={() => setTechSkipped(true)}>Skip to the defense<ArrowRight size={14} /></button>
+            <button className="button" onClick={() => setTechOpen(true)}>Name the technologies<ArrowRight size={13} /></button>
+            <button className="text-button" onClick={() => setTechSkipped(true)}>Hide this step</button>
           </div>
         </section>)}
         {lesson && activeLesson && revealed && <DefenseStage
           lesson={activeLesson}
           nextLesson={nextLesson ? { id: nextLesson.id, title: nextLesson.title } : undefined}
-          enabled={objectivesPassed && (completed || techDone)}
-          lockedReason={objectivesPassed && !techDone ? "Finish or skip the technology step above to unlock the reflection and defense." : undefined}
+          enabled={objectivesPassed && (completed || techDone || !techRequired)}
+          lockedReason={objectivesPassed && !techDone && techRequired ? "Finish or skip the technology step above to unlock the reflection and defense." : undefined}
           completed={completed}
           hintCount={hintCount}
           onComplete={completeLesson}
